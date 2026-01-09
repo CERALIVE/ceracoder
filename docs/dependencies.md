@@ -150,7 +150,9 @@ sudo apt-get install libsrt-dev
 |-------------|--------|-------|
 | 1.4.0 – 1.4.4 | Supported | Minimum for `SRTO_RETRANSMITALGO` |
 | 1.5.x | Supported | Recommended; includes connection bonding |
-| < 1.4.0 | Not supported | Missing required socket options |
+| < 1.4.0 | **Not supported** | Compile will fail with `#error` |
+
+> **Compile-time enforcement:** belacoder includes a preprocessor check that fails compilation if `SRT_VERSION_VALUE < 1.4.0`. This ensures you get a clear error message instead of confusing link-time or runtime failures.
 
 ## Minimum Version Rationale
 

@@ -83,7 +83,24 @@ flowchart TD
    - **`new_buf_cb`**: Called on each appsink sample. Packs MPEG-TS packets into SRT-sized chunks and calls `srt_send()`.
    - **`connection_housekeeping`** (every 20 ms): Polls SRT stats (`msRTT`, `SRTO_SNDDATA`, `mbpsSendRate`), runs the bitrate controller, and updates the encoder's bitrate property.
    - **`stall_check`** (every 1 s): Detects pipeline stalls and exits if the position hasn't advanced.
-6. **Shutdown**: On SIGTERM/SIGINT, close SRT socket, set pipeline to NULL, exit.
+6. **Shutdown**: On SIGTERM/SIGINT, close SRT socket, clean up SRT library, unmap pipeline file, exit.
+
+## Signal Handling
+
+belacoder uses async-signal-safe signal handling:
+
+- **SIGTERM/SIGINT**: Handled via `g_unix_signal_add()` which safely integrates with the GLib main loop
+- **SIGHUP**: Uses a volatile flag (`reload_bitrate_flag`) that is checked in `stall_check()` to safely reload bitrate settings
+- **SIGALRM**: Used as a fallback to force exit if the pipeline fails to stop gracefully
+
+## Resource Management
+
+All resources are properly cleaned up on exit:
+
+- SRT socket closed via `srt_close()`
+- SRT library cleaned up via `srt_cleanup()`
+- Pipeline file mmap region released via `munmap()`
+- GStreamer pipeline set to NULL state
 
 ## Key Abstractions
 
