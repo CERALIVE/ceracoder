@@ -91,9 +91,12 @@ int srt_latency = DEF_SRT_LATENCY;
 int srt_pkt_size = DEFAULT_SRT_PKT_SIZE;
 
 uint64_t getms() {
-  struct timespec time = {0, 0};
-  assert(clock_gettime(CLOCK_MONOTONIC_RAW, &time) == 0);
-  return time.tv_sec * 1000 + time.tv_nsec / 1000 / 1000;
+  struct timespec ts = {0, 0};
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    // Should never happen, but handle gracefully
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
 /* Attempts to stop the gstreamer pipeline cleanly
