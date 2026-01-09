@@ -434,26 +434,36 @@ int connect_srt(char *host, char *port, char *stream_id) {
 #if SRT_MAX_OHEAD > 0
   // auto, based on input rate
   int64_t max_bw = 0;
-  ret = srt_setsockflag(sock, SRTO_MAXBW, &max_bw, sizeof(max_bw));
-  assert(ret == 0);
+  if (srt_setsockflag(sock, SRTO_MAXBW, &max_bw, sizeof(max_bw)) != 0) {
+    fprintf(stderr, "Failed to set SRTO_MAXBW: %s\n", srt_getlasterror_str());
+    return -4;
+  }
 
   // overhead(retransmissions)
   int32_t ohead = SRT_MAX_OHEAD;
-  ret = srt_setsockflag(sock, SRTO_OHEADBW, &ohead, sizeof(ohead));
-  assert(ret == 0);
+  if (srt_setsockflag(sock, SRTO_OHEADBW, &ohead, sizeof(ohead)) != 0) {
+    fprintf(stderr, "Failed to set SRTO_OHEADBW: %s\n", srt_getlasterror_str());
+    return -4;
+  }
 #endif
 
-  ret = srt_setsockflag(sock, SRTO_LATENCY, &srt_latency, sizeof(srt_latency));
-  assert(ret == 0);
+  if (srt_setsockflag(sock, SRTO_LATENCY, &srt_latency, sizeof(srt_latency)) != 0) {
+    fprintf(stderr, "Failed to set SRTO_LATENCY: %s\n", srt_getlasterror_str());
+    return -4;
+  }
 
   if (stream_id != NULL) {
-    ret = srt_setsockflag(sock, SRTO_STREAMID, stream_id, strlen(stream_id));
-    assert(ret == 0);
+    if (srt_setsockflag(sock, SRTO_STREAMID, stream_id, strlen(stream_id)) != 0) {
+      fprintf(stderr, "Failed to set SRTO_STREAMID: %s\n", srt_getlasterror_str());
+      return -4;
+    }
   }
 
   int32_t algo = 1;
-  ret = srt_setsockflag(sock, SRTO_RETRANSMITALGO, &algo, sizeof(algo));
-  assert(ret == 0);
+  if (srt_setsockflag(sock, SRTO_RETRANSMITALGO, &algo, sizeof(algo)) != 0) {
+    fprintf(stderr, "Failed to set SRTO_RETRANSMITALGO: %s\n", srt_getlasterror_str());
+    return -4;
+  }
 
   int connected = -3;
   for (struct addrinfo *addr = addrs; addr != NULL; addr = addr->ai_next) {
@@ -462,8 +472,9 @@ int connect_srt(char *host, char *port, char *stream_id) {
       connected = 0;
 
       int len = sizeof(srt_latency);
-      ret = srt_getsockflag(sock, SRTO_PEERLATENCY, &srt_latency, &len);
-      assert(ret == 0);
+      if (srt_getsockflag(sock, SRTO_PEERLATENCY, &srt_latency, &len) != 0) {
+        fprintf(stderr, "Warning: Failed to get SRTO_PEERLATENCY: %s\n", srt_getlasterror_str());
+      }
       fprintf(stderr, "SRT connected to %s:%s. Negotiated latency: %d ms\n",
               host, port, srt_latency);
       break;
@@ -764,6 +775,9 @@ int main(int argc, char** argv) {
             break;
           case -2:
             reason = "failed to open the SRT socket";
+            break;
+          case -4:
+            reason = "failed to set SRT socket options";
             break;
           default:
             reason = "unknown";
