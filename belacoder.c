@@ -18,8 +18,11 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <errno.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/mman.h>
+#include <arpa/inet.h>
 
 #include <gst/gst.h>
 #include <gst/gstinfo.h>
