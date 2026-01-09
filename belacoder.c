@@ -112,6 +112,13 @@ void sighup_handler(int sig) {
   reload_bitrate_flag = 1;
 }
 
+// GLib signal handler for SIGTERM/SIGINT (called from main loop, not signal context)
+gboolean stop_from_signal(gpointer user_data) {
+  (void)user_data;
+  stop();
+  return G_SOURCE_REMOVE;
+}
+
 /*
   This checks periodically for pipeline stalls. The alsasrc element tends to stall rather
   than error out when the input resolution changes for a live input into a Camlink 4K
@@ -780,8 +787,8 @@ int main(int argc, char** argv) {
     can restart it if needed, e.g. belaUI
   */
   loop = g_main_loop_new (NULL, FALSE);
-  signal(SIGTERM, stop);
-  signal(SIGINT, stop);
+  g_unix_signal_add(SIGTERM, stop_from_signal, NULL);
+  g_unix_signal_add(SIGINT, stop_from_signal, NULL);
   signal(SIGALRM, cb_sigalarm);
   g_timeout_add(1000, stall_check, NULL); // check every second
 
