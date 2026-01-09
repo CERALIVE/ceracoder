@@ -59,6 +59,30 @@
 #define BITRATE_DECR_SCALE     10         // under heavy congestion, the bitrate is decreased by
                                           // BITRATE_DECR_MIN + cur_bitrate/BITRATE_DECR_SCALE
 
+// Exponential moving average smoothing factors
+#define EMA_SLOW           0.99   // for bs_avg, rtt_avg, jitter decay
+#define EMA_FAST           0.01   // complement of EMA_SLOW (1 - 0.99)
+#define EMA_RTT_DELTA      0.8    // for rtt_avg_delta smoothing
+#define EMA_RTT_DELTA_NEW  0.2    // complement (1 - 0.8)
+#define EMA_THROUGHPUT     0.97   // for throughput smoothing
+#define EMA_THROUGHPUT_NEW 0.03   // complement (1 - 0.97)
+
+// RTT tracking constants
+#define RTT_MIN_DRIFT      1.001  // per-sample drift rate for min RTT tracking
+#define RTT_IGNORE_VALUE   100    // RTT value that indicates no valid measurement
+#define RTT_INITIAL        300    // initial prev_rtt value
+#define RTT_MIN_INITIAL    200.0  // initial rtt_min value
+
+// Threshold multipliers for congestion detection
+#define BS_TH3_MULT        4      // heavy congestion: (bs_avg + bs_jitter) * 4
+#define BS_TH2_JITTER_MULT 3.0    // medium congestion jitter multiplier
+#define BS_TH1_JITTER_MULT 2.5    // light congestion jitter multiplier
+#define BS_TH_MIN          50     // minimum buffer threshold
+#define RTT_JITTER_MULT    4      // rtt_th_max jitter multiplier
+#define RTT_AVG_PERCENT    15     // rtt_th_max percentage of average (15%)
+#define RTT_STABLE_DELTA   0.01   // max rtt_avg_delta for stable conditions
+#define RTT_MIN_JITTER     1      // minimum jitter for rtt_th_min calculation
+
 // settings ranges
 #define TS_PKT_SIZE 188
 #define REDUCED_SRT_PKT_SIZE ((TS_PKT_SIZE)*6)
@@ -230,12 +254,12 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
 
   // Rolling average
   static double bs_avg = 0;
-  bs_avg = bs_avg*0.99 + (double)bs * 0.01;
+  bs_avg = bs_avg * EMA_SLOW + (double)bs * EMA_FAST;
 
   // Update the buffer size jitter
   static double bs_jitter = 0;
   static int prev_bs = 0;
-  bs_jitter = 0.99 * bs_jitter;
+  bs_jitter = EMA_SLOW * bs_jitter;
   int delta_bs = bs - prev_bs;
   if (delta_bs > bs_jitter) {
     bs_jitter = (double)delta_bs;
@@ -253,26 +277,26 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   if (rtt_avg == 0.0) {
     rtt_avg = (double)rtt;
   } else {
-    rtt_avg = rtt_avg * 0.99 + 0.01 * (double)rtt;
+    rtt_avg = rtt_avg * EMA_SLOW + EMA_FAST * (double)rtt;
   }
 
   // Update the average RTT delta
   static double rtt_avg_delta = 0;
-  static int prev_rtt = 300;
+  static int prev_rtt = RTT_INITIAL;
   double delta_rtt = (double)(rtt - prev_rtt);
-  rtt_avg_delta = rtt_avg_delta * 0.8 + delta_rtt * 0.2;
+  rtt_avg_delta = rtt_avg_delta * EMA_RTT_DELTA + delta_rtt * EMA_RTT_DELTA_NEW;
   prev_rtt = rtt;
 
   // Update the minimum RTT
-  static double rtt_min = 200.0;
-  rtt_min *= 1.001;
-  if (rtt != 100 && rtt < rtt_min && rtt_avg_delta < 1.0) {
+  static double rtt_min = RTT_MIN_INITIAL;
+  rtt_min *= RTT_MIN_DRIFT;
+  if (rtt != RTT_IGNORE_VALUE && rtt < rtt_min && rtt_avg_delta < 1.0) {
     rtt_min = rtt;
   }
 
   // Update the RTT jitter
   static double rtt_jitter = 0;
-  rtt_jitter *= 0.99;
+  rtt_jitter *= EMA_SLOW;
   if (delta_rtt > rtt_jitter) {
     rtt_jitter = delta_rtt;
   }
@@ -282,8 +306,8 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
    * Rolling average of the network throughput
    */
   static double throughput = 0.0;
-  throughput *= 0.97;
-  throughput += ((double)stats->mbpsSendRate * 1000.0 * 1000.0 / 1024.0) * 0.03;
+  throughput *= EMA_THROUGHPUT;
+  throughput += ((double)stats->mbpsSendRate * 1000.0 * 1000.0 / 1024.0) * EMA_THROUGHPUT_NEW;
 
 
   debug("bs: %d bs_avg: %f, bs_jitter %f, bitrate %d rtt %d, delta rtt %.0f, avg delta %.1f, avg rtt %.1f, rtt_jitter, %.2f, rtt_min %.1f\n",
@@ -294,12 +318,12 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   static uint64_t next_bitrate_decr = 0;
 
   int bitrate = cur_bitrate;
-  int bs_th3 = (bs_avg + bs_jitter)*4;
-  int bs_th2 = max(50, bs_avg + max(bs_jitter*3.0, bs_avg));
+  int bs_th3 = (bs_avg + bs_jitter) * BS_TH3_MULT;
+  int bs_th2 = max(BS_TH_MIN, bs_avg + max(bs_jitter * BS_TH2_JITTER_MULT, bs_avg));
   bs_th2 = min(bs_th2, RTT_TO_BS(srt_latency/2));
-  int bs_th1 = max(50, bs_avg + bs_jitter*2.5);
-  int rtt_th_max = rtt_avg + max(rtt_jitter*4, rtt_avg*15/100);
-  int rtt_th_min = rtt_min + max(1, rtt_jitter*2);
+  int bs_th1 = max(BS_TH_MIN, bs_avg + bs_jitter * BS_TH1_JITTER_MULT);
+  int rtt_th_max = rtt_avg + max(rtt_jitter * RTT_JITTER_MULT, rtt_avg * RTT_AVG_PERCENT / 100);
+  int rtt_th_min = rtt_min + max(RTT_MIN_JITTER, rtt_jitter * 2);
 
 
   if (bitrate > min_bitrate && (rtt >= (srt_latency / 3) || bs > bs_th3)) {
@@ -317,7 +341,7 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
     next_bitrate_decr = ctime + BITRATE_DECR_INT;
 
   } else if (ctime > next_bitrate_incr &&
-             rtt < rtt_th_min && rtt_avg_delta < 0.01) {
+             rtt < rtt_th_min && rtt_avg_delta < RTT_STABLE_DELTA) {
     bitrate += BITRATE_INCR_MIN + bitrate / BITRATE_INCR_SCALE;
     next_bitrate_incr = ctime + BITRATE_INCR_INT;
   }
