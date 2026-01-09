@@ -798,7 +798,8 @@ int main(int argc, char** argv) {
             break;
         }
         fprintf(stderr, "Failed to establish an SRT connection: %s. Retrying...\n", reason);
-        usleep(500*1000);
+        struct timespec retry_delay = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
+        nanosleep(&retry_delay, NULL);
       }
     } while(ret_srt != 0);
   }
