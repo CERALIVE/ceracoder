@@ -651,12 +651,14 @@ int main(int argc, char** argv) {
     perror("");
     exit(EXIT_FAILURE);
   }
-  int len = lseek(pipeline_fd, 0, SEEK_END);
-  if (len == 0) {
+  size_t launch_string_len = lseek(pipeline_fd, 0, SEEK_END);
+  if (launch_string_len == 0) {
     fprintf(stderr, "The pipeline file is empty, exiting\n");
+    close(pipeline_fd);
     exit(EXIT_FAILURE);
   }
-  char *launch_string = mmap(0, len, PROT_READ, MAP_PRIVATE, pipeline_fd, 0);
+  char *launch_string = mmap(0, launch_string_len, PROT_READ, MAP_PRIVATE, pipeline_fd, 0);
+  close(pipeline_fd);  // mmap keeps its own reference, fd no longer needed
   fprintf(stderr, "Gstreamer pipeline: %s\n", launch_string);
 
   gst_init (&argc, &argv);
@@ -809,6 +811,9 @@ int main(int argc, char** argv) {
 
   // Clean up SRT library resources
   srt_cleanup();
+
+  // Clean up mmap'd pipeline file
+  munmap(launch_string, launch_string_len);
 
   return 0;
 }
