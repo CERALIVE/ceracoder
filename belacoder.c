@@ -74,6 +74,9 @@ GstElement *encoder, *overlay;
 SRTSOCKET sock = -1;
 int quit = 0;
 
+// Signal flag for async-signal-safe SIGHUP handling
+volatile sig_atomic_t reload_bitrate_flag = 0;
+
 int enc_bitrate_div = 1;
 
 int av_delay = 0;
@@ -103,6 +106,12 @@ void stop() {
   }
 }
 
+// Async-signal-safe handler for SIGHUP - just sets a flag
+void sighup_handler(int sig) {
+  (void)sig;
+  reload_bitrate_flag = 1;
+}
+
 /*
   This checks periodically for pipeline stalls. The alsasrc element tends to stall rather
   than error out when the input resolution changes for a live input into a Camlink 4K
@@ -115,6 +124,14 @@ gboolean stall_check(gpointer data) {
   if (quit) {
     stop();
     return TRUE;
+  }
+
+  // Check for SIGHUP-triggered bitrate reload (async-signal-safe approach)
+  if (reload_bitrate_flag) {
+    reload_bitrate_flag = 0;
+    if (bitrate_filename) {
+      read_bitrate_file();
+    }
   }
 
   static gint64 prev_pos = -1;
@@ -168,12 +185,14 @@ int read_bitrate_file() {
   }
 
   free(buf);
+  fclose(f);
   min_bitrate = br[0];
   max_bitrate = br[1];
   return 0;
 
 ret_err:
   if (buf) free(buf);
+  fclose(f);
   return -2;
 }
 
@@ -660,7 +679,7 @@ int main(int argc, char** argv) {
   }
   cur_bitrate = max_bitrate;
   fprintf(stderr, "Max bitrate: %d\n", max_bitrate);
-  signal(SIGHUP, (__sighandler_t)read_bitrate_file);
+  signal(SIGHUP, sighup_handler);
 
   encoder = gst_bin_get_by_name(GST_BIN(gst_pipeline), "venc_bps");
   if (!GST_IS_ELEMENT(encoder)) {
