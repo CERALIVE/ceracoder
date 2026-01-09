@@ -345,7 +345,8 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   static uint64_t next_bitrate_incr = 0;
   static uint64_t next_bitrate_decr = 0;
 
-  int bitrate = cur_bitrate;
+  // Use int64_t for bitrate calculations to prevent overflow at high bitrates
+  int64_t bitrate = cur_bitrate;
   int bs_th3 = (bs_avg + bs_jitter) * BS_TH3_MULT;
   int bs_th2 = max(BS_TH_MIN, bs_avg + max(bs_jitter * BS_TH2_JITTER_MULT, bs_avg));
   bs_th2 = min(bs_th2, RTT_TO_BS(srt_latency/2));
@@ -374,15 +375,19 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
     next_bitrate_incr = ctime + BITRATE_INCR_INT;
   }
 
-  bitrate = min_max(bitrate, min_bitrate, max_bitrate);
+  // Clamp to valid range and convert back to int
+  bitrate = min_max(bitrate, (int64_t)min_bitrate, (int64_t)max_bitrate);
+  cur_bitrate = (int)bitrate;
 
   // round the bitrate we set to 100 kbps
-  int rounded_br = bitrate / (100*1000) * (100*1000);
+  int rounded_br = cur_bitrate / (100*1000) * (100*1000);
 
   update_overlay(rounded_br, throughput, rtt, rtt_th_min, rtt_th_max, bs, bs_th1, bs_th2, bs_th3);
 
-  if (bitrate != cur_bitrate) {
-    cur_bitrate = bitrate;
+  // Check if bitrate actually changed (comparing int64_t with original int value)
+  static int prev_set_bitrate = 0;
+  if (rounded_br != prev_set_bitrate) {
+    prev_set_bitrate = rounded_br;
 
     g_object_set (G_OBJECT(encoder), "bps", rounded_br / enc_bitrate_div, NULL);
 
