@@ -621,8 +621,8 @@ static void cb_ptsfixup(GstElement *identity, GstBuffer *buffer, gpointer data) 
     if (get_sink_framerate(identity, &fr_numerator, &fr_denominator) == 0) {
       pts = input_pts;
       period = GST_SECOND * fr_denominator / fr_numerator;
-      printf("%s: framerate: %d / %d, period is %ld\n",
-             __FUNCTION__, fr_numerator, fr_denominator, period);
+      fprintf(stderr, "%s: framerate: %d / %d, period is %ld\n",
+              __FUNCTION__, fr_numerator, fr_denominator, period);
     }
 
   // Subsequent frames, adjust the PTS
@@ -752,7 +752,7 @@ int main(int argc, char** argv) {
   GError *error = NULL;
   gst_pipeline  = (GstPipeline*) gst_parse_launch(launch_string, &error);
   if (gst_pipeline == NULL) {
-    g_print( "Failed to parse launch: %s\n", error->message);
+    fprintf(stderr, "Failed to parse launch: %s\n", error->message);
     return -1;
   }
   if (error) g_error_free(error);
