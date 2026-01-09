@@ -135,6 +135,34 @@ uint64_t getms() {
   return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
+// Parse a string to long with full error checking
+// Returns 0 on success, -1 on parse error or out of range
+int parse_long(const char *str, long *result, long min_val, long max_val) {
+  if (str == NULL || *str == '\0') {
+    return -1;
+  }
+  char *endptr;
+  errno = 0;
+  long val = strtol(str, &endptr, 10);
+  // Check for conversion errors
+  if (errno != 0 || endptr == str) {
+    return -1;
+  }
+  // Allow trailing whitespace/newline but not other garbage
+  while (*endptr == ' ' || *endptr == '\t' || *endptr == '\n' || *endptr == '\r') {
+    endptr++;
+  }
+  if (*endptr != '\0') {
+    return -1;
+  }
+  // Range check
+  if (val < min_val || val > max_val) {
+    return -1;
+  }
+  *result = val;
+  return 0;
+}
+
 /* Attempts to stop the gstreamer pipeline cleanly
    Also sets up an alarm in case it doesn't */
 void stop() {
@@ -207,12 +235,12 @@ void update_overlay(int set_bitrate, double throughput,
   }
 }
 
-int parse_bitrate(char *bitrate_string) {
-  int bitrate = strtol(bitrate_string, NULL, 10);
-  if (bitrate < MIN_BITRATE || bitrate > ABS_MAX_BITRATE) {
+int parse_bitrate(const char *bitrate_string) {
+  long bitrate;
+  if (parse_long(bitrate_string, &bitrate, MIN_BITRATE, ABS_MAX_BITRATE) != 0) {
     return -1;
   }
-  return bitrate;
+  return (int)bitrate;
 }
 
 int read_bitrate_file() {
@@ -451,9 +479,9 @@ int parse_ip(struct sockaddr_in *addr, char *ip_str) {
 int parse_ip_port(struct sockaddr_in *addr, char *ip_str, char *port_str) {
   if (parse_ip(addr, ip_str) != 0) return -1;
 
-  int port = strtol(port_str, NULL, 10);
-  if (port <= 0 || port > 65535) return -2;
-  addr->sin_port = htons(port);
+  long port;
+  if (parse_long(port_str, &port, 1, 65535) != 0) return -2;
+  addr->sin_port = htons((uint16_t)port);
 
   return 0;
 }
@@ -660,24 +688,28 @@ int main(int argc, char** argv) {
       case 'b':
         bitrate_filename = optarg;
         break;
-      case 'd':
-        av_delay = strtol(optarg, NULL, 10);
-        if (av_delay < -MAX_AV_DELAY || av_delay > MAX_AV_DELAY) {
-          fprintf(stderr, "Maximum sound delay +/- %d\n\n", MAX_AV_DELAY);
+      case 'd': {
+        long delay;
+        if (parse_long(optarg, &delay, -MAX_AV_DELAY, MAX_AV_DELAY) != 0) {
+          fprintf(stderr, "Invalid delay value. Maximum sound delay +/- %d\n\n", MAX_AV_DELAY);
           exit_syntax();
         }
+        av_delay = (int)delay;
         break;
+      }
       case 's':
         stream_id = optarg;
         break;
-      case 'l':
-        srt_latency = strtol(optarg, NULL, 10);
-        if (srt_latency < MIN_SRT_LATENCY || srt_latency > MAX_SRT_LATENCY) {
-          fprintf(stderr, "The SRT latency must be between %d and %d ms\n\n",
+      case 'l': {
+        long latency;
+        if (parse_long(optarg, &latency, MIN_SRT_LATENCY, MAX_SRT_LATENCY) != 0) {
+          fprintf(stderr, "Invalid latency value. Must be between %d and %d ms\n\n",
                   MIN_SRT_LATENCY, MAX_SRT_LATENCY);
           exit_syntax();
         }
+        srt_latency = (int)latency;
         break;
+      }
       case 'r':
         srt_pkt_size = REDUCED_SRT_PKT_SIZE;
         break;
