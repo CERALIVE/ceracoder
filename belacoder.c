@@ -173,6 +173,9 @@ void stop() {
   }
 }
 
+// Forward declarations
+int read_bitrate_file(void);
+
 // Async-signal-safe handler for SIGHUP - just sets a flag
 void sighup_handler(int sig) {
   (void)sig;
@@ -395,7 +398,8 @@ void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   }
 }
 
-gboolean connection_housekeeping() {
+gboolean connection_housekeeping(gpointer user_data) {
+  (void)user_data;
   uint64_t ctime = getms();
   static uint64_t prev_ack_ts = 0;
   static uint64_t prev_ack_count = 0;
