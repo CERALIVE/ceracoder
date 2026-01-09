@@ -807,5 +807,8 @@ int main(int argc, char** argv) {
 
   gst_element_set_state((GstElement*)gst_pipeline, GST_STATE_NULL);
 
+  // Clean up SRT library resources
+  srt_cleanup();
+
   return 0;
 }
