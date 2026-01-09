@@ -130,7 +130,7 @@ pkg-config --modversion srt   # should print version ≥ 1.4.0
 
 ### Why CERALIVE/srt?
 
-The [CERALIVE/srt](https://github.com/CERALIVE/srt) fork is described as an "up-to-date fork of the SRT shared library with BELABOX changes." It includes patches that improve behavior for the BELABOX/belacoder use case, particularly around:
+The [CERALIVE/srt](https://github.com/CERALIVE/srt) fork is described as an "up-to-date fork of the SRT shared library with BELABOX changes." It includes patches that improve behavior for the CERALIVE/belacoder use case, particularly around:
 
 - Retransmission algorithm tuning
 - Statistics reporting

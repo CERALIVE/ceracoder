@@ -285,7 +285,6 @@ flowchart TD
 4. **No bandwidth probing**: Only increases when conditions are stable, no active probing
 5. **Magic numbers**: Many tuning constants that could benefit from configuration
 
-See [Balancing Algorithms](balancing-algorithms.md) for alternative algorithm designs.
 
 ## ACK Timeout Detection
 
@@ -302,5 +301,3 @@ Where `SRT_ACK_TIMEOUT = 6000 ms`. This compensates for SRT's timeout behavior w
 ## See Also
 
 - [Architecture](architecture.md) – System overview
-- [Balancing Algorithms](balancing-algorithms.md) – Alternative algorithm designs
-- [Code Quality and Risks](code-quality-and-risks.md) – Implementation issues

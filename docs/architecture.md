@@ -148,9 +148,30 @@ mpegtsmux name=mux !
 appsink name=appsink
 ```
 
+## Network Bonding Integration
+
+belacoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) for network bonding:
+
+```
+┌──────────────┐      ┌─────────┐      ┌──────────┐      ┌─────────────┐
+│ belacoder    │─SRT─▶│ srtla   │─────▶│ Modem 1  │─────▶│             │
+│              │      │ (local) │─────▶│ Modem 2  │─────▶│ srtla_rec   │─SRT─▶ Server
+│              │      │         │─────▶│ Modem 3  │─────▶│             │
+└──────────────┘      └─────────┘      └──────────┘      └─────────────┘
+```
+
+When bonding multiple networks:
+
+1. **belacoder** connects to localhost where srtla runs
+2. **srtla** splits packets across multiple network interfaces
+3. **srtla_rec** reassembles and forwards to the destination
+
+The bitrate controller adapts to the **aggregate capacity** of all bonded links. SRT's RTT and buffer metrics reflect the combined network state, so belacoder automatically:
+- Reduces bitrate when a modem loses signal
+- Increases bitrate as aggregate capacity improves
+- Maintains stable streaming despite individual link fluctuations
+
 ## See Also
 
 - [Bitrate Control](bitrate-control.md) – Detailed algorithm description
-- [Balancing Algorithms](balancing-algorithms.md) – Future multi-algorithm design
 - [Dependencies](dependencies.md) – Build and runtime requirements
-- [Code Quality and Risks](code-quality-and-risks.md) – Known issues and improvement opportunities

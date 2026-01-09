@@ -1,7 +1,7 @@
 belacoder - live video encoder with dynamic bitrate control and [SRT](https://github.com/CERALIVE/srt) support
 =========
 
-This is a [GStreamer](https://gstreamer.freedesktop.org/)-based encoder with support for [SRT](https://github.com/CERALIVE/srt) and dynamic bitrate control depending on the network capacity. This means that if needed, the video bitrate is automatically reduced on-the-fly to match the speed of the network connection. The intended application is live video streaming over bonded 4G modems by using it on a single board computer together with a HDMI capture card and [srtla](https://github.com/BELABOX/srtla).
+This is a [GStreamer](https://gstreamer.freedesktop.org/)-based encoder with support for [SRT](https://github.com/CERALIVE/srt) and dynamic bitrate control depending on the network capacity. This means that if needed, the video bitrate is automatically reduced on-the-fly to match the speed of the network connection. The intended application is live video streaming over bonded 4G modems by using it on a single board computer together with a HDMI capture card and [srtla](https://github.com/CERALIVE/srtla).
 
 belacoder is developed on an NVIDIA Jetson Nano ([Amazon.com](https://amzn.to/3mt2Coz) / [Amazon.co.uk](https://amzn.to/31IOgJ2) / [NVIDIA](https://developer.nvidia.com/embedded/jetson-nano-developer-kit)), and we provide GStreamer pipelines for using its hardware video encoding. However it can also be used on other platforms as long as the correct GStreamer pipeline is provided.
 
@@ -26,6 +26,65 @@ belacoder reads a GStreamer pipeline from a file, constructs it, and streams the
 ```
 
 The bitrate controller polls SRT statistics (RTT, send buffer) every 20 ms and adjusts the encoder's bitrate to avoid congestion. See [docs/bitrate-control.md](docs/bitrate-control.md) for the algorithm details.
+
+
+Network Bonding with srtla
+--------------------------
+
+belacoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) (SRT Link Aggregation) for bonding multiple network connections. This is the primary use case for live streaming over cellular networks.
+
+### How It Works
+
+```
+┌──────────────┐
+│ belacoder    │
+│ (encoder +   │──SRT──▶┌─────────┐     ┌─────────┐
+│  SRT sender) │        │ srtla   │     │ Modem 1 │──┐
+└──────────────┘        │ (local) │────▶│ (4G/5G) │  │
+                        │         │     └─────────┘  │
+                        │         │     ┌─────────┐  │    ┌─────────────┐
+                        │         │────▶│ Modem 2 │──┼───▶│ srtla_rec   │──SRT──▶ Server
+                        │         │     │ (4G/5G) │  │    │ (receiver)  │
+                        │         │     └─────────┘  │    └─────────────┘
+                        │         │     ┌─────────┐  │
+                        │         │────▶│ Modem 3 │──┘
+                        └─────────┘     │ (WiFi)  │
+                                        └─────────┘
+```
+
+1. **belacoder** encodes video and sends SRT to localhost (where srtla runs)
+2. **srtla** splits the SRT stream across multiple network interfaces (modems, WiFi, etc.)
+3. **srtla_rec** on the receiving end reassembles the stream and forwards to the SRT server
+
+### Typical Deployment
+
+```bash
+# Terminal 1: Start srtla (bonding agent)
+srtla_send 127.0.0.1 5000 receiver.example.com 5000
+
+# Terminal 2: Start belacoder pointing to local srtla
+./belacoder pipeline/h264_camlink_1080p 127.0.0.1 5000 -s mystreamid -l 2000 -b bitrate.conf
+```
+
+### Why This Matters for Bitrate Control
+
+When using multiple networks:
+- **Aggregate bandwidth** can exceed any single connection
+- **Packet loss** on one link doesn't drop the stream (redundancy)
+- **Variable capacity** as modems enter/exit coverage areas
+
+belacoder's adaptive bitrate algorithm adjusts to the **combined capacity** of all bonded links as reported by SRT. When a modem drops out, SRT's buffer grows and RTT increases, triggering bitrate reduction. When capacity increases, belacoder gradually ramps up.
+
+### Configuration Tips
+
+| Scenario | Recommended Settings |
+|----------|---------------------|
+| 2x 4G modems | `-l 2000` (2s latency), max 8-12 Mbps |
+| 3+ modems (aggressive) | `-l 1500`, max 15-20 Mbps |
+| Single modem (no srtla) | `-l 3000`, conservative max bitrate |
+| Stable network (fiber) | Higher max bitrate, can use fixed mode |
+
+For srtla setup instructions, see [CERALIVE/srtla](https://github.com/CERALIVE/srtla).
 
 
 Dependencies
@@ -68,7 +127,7 @@ Building
 --------
 
 ```bash
-git clone https://github.com/BELABOX/belacoder.git
+git clone https://github.com/CERALIVE/belacoder.git
 cd belacoder
 make
 ```
@@ -198,9 +257,6 @@ Documentation
 * [Architecture](docs/architecture.md) – System overview and dataflow
 * [Dependencies](docs/dependencies.md) – Full dependency list with versions
 * [Bitrate Control](docs/bitrate-control.md) – Adaptive bitrate algorithm details
-* [Balancing Algorithms](docs/balancing-algorithms.md) – Future multi-algorithm design
-* [Code Quality and Risks](docs/code-quality-and-risks.md) – Known issues and improvements
-* [Rust/Go Migration Feasibility](docs/rust-go-migration-feasibility.md) – Language migration analysis
 
 
 License
