@@ -32,6 +32,14 @@
 #include <srt.h>
 #include <srt/access_control.h>
 
+// Ensure SRT version is at least 1.4.0 (required for SRTO_RETRANSMITALGO)
+#ifndef SRT_VERSION_VALUE
+#define SRT_VERSION_VALUE SRT_MAKE_VERSION_VALUE(SRT_VERSION_MAJOR, SRT_VERSION_MINOR, SRT_VERSION_PATCH)
+#endif
+#if SRT_VERSION_VALUE < SRT_MAKE_VERSION_VALUE(1, 4, 0)
+#error "SRT 1.4.0 or later required (for SRTO_RETRANSMITALGO)"
+#endif
+
 #define SRT_MAX_OHEAD 20     // maximum SRT transmission overhead (when using appsink)
 #define SRT_ACK_TIMEOUT 6000 // maximum interval between received ACKs before the connection is TOed
 
