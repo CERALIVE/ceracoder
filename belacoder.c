@@ -68,9 +68,10 @@
 #define MAX_SRT_LATENCY 10000
 #define DEF_SRT_LATENCY 2000
 
-#define min(a, b) ((a < b) ? a : b)
-#define max(a, b) ((a > b) ? a : b)
-#define min_max(a, l, h) (max(min((a), (h)), (l)))
+// Use GLib's MIN/MAX which are type-safe and don't double-evaluate
+#define min(a, b) MIN((a), (b))
+#define max(a, b) MAX((a), (b))
+#define min_max(a, l, h) (MAX(MIN((a), (h)), (l)))
 
 //#define DEBUG 1
 #ifdef DEBUG
