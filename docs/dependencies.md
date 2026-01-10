@@ -152,7 +152,7 @@ sudo apt-get install libsrt-dev
 | 1.5.x | Supported | Recommended; includes connection bonding |
 | < 1.4.0 | **Not supported** | Compile will fail with `#error` |
 
-> **Compile-time enforcement:** belacoder includes a preprocessor check that fails compilation if `SRT_VERSION_VALUE < 1.4.0`. This ensures you get a clear error message instead of confusing link-time or runtime failures.
+> **Compile-time enforcement:** ceracoder includes a preprocessor check that fails compilation if `SRT_VERSION_VALUE < 1.4.0`. This ensures you get a clear error message instead of confusing link-time or runtime failures.
 
 ## Minimum Version Rationale
 
@@ -160,7 +160,7 @@ sudo apt-get install libsrt-dev
 |------------|-------------|--------|
 | GStreamer 1.14 | API stability | `gst_app_sink_set_callbacks`, `gst_buffer_map` API |
 | GLib 2.40 | — | Required by GStreamer 1.14+ |
-| libsrt 1.4.0 | `SRTO_RETRANSMITALGO` | belacoder sets `SRTO_RETRANSMITALGO = 1` |
+| libsrt 1.4.0 | `SRTO_RETRANSMITALGO` | ceracoder sets `SRTO_RETRANSMITALGO = 1` |
 | GCC 4.9 / Clang 3.5 | C99 | Code uses C99 features (mixed declarations, `//` comments) |
 
 ## Complete Install (Ubuntu 20.04+)
@@ -235,7 +235,7 @@ make test_all
 
 ## Development Dependencies (Optional)
 
-These tools are useful for development and code quality but not required for building or running belacoder:
+These tools are useful for development and code quality but not required for building or running ceracoder:
 
 | Tool | Ubuntu/Debian Package | Arch Package | Purpose |
 |------|----------------------|--------------|---------|
