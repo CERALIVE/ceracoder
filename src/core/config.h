@@ -23,7 +23,7 @@
 #include <stdint.h>
 
 /*
- * Configuration structure for belacoder
+ * Configuration structure for ceracoder
  *
  * All bitrates are in Kbps in the config file, converted to bps internally.
  * Example: 6000 in config = 6 Mbps = 6,000,000 bps
