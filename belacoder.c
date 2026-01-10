@@ -737,6 +737,19 @@ int main(int argc, char** argv) {
   balancer_config.max_bitrate = max_bitrate;
   balancer_config.srt_latency = srt_latency;
   balancer_config.srt_pkt_size = srt_pkt_size;
+
+  // Adaptive algorithm tuning (config uses Kbps, convert to bps)
+  balancer_config.adaptive_incr_step = config_bitrate_bps(g_config.adaptive.incr_step);
+  balancer_config.adaptive_decr_step = config_bitrate_bps(g_config.adaptive.decr_step);
+  balancer_config.adaptive_incr_interval = g_config.adaptive.incr_interval;
+  balancer_config.adaptive_decr_interval = g_config.adaptive.decr_interval;
+
+  // AIMD algorithm tuning
+  balancer_config.aimd_incr_step = config_bitrate_bps(g_config.aimd.incr_step);
+  balancer_config.aimd_decr_mult = g_config.aimd.decr_mult;
+  balancer_config.aimd_incr_interval = g_config.aimd.incr_interval;
+  balancer_config.aimd_decr_interval = g_config.aimd.decr_interval;
+
   balancer_state = balancer_algo->init(&balancer_config);
   if (balancer_state == NULL) {
     fprintf(stderr, "Failed to initialize balancer algorithm\n");

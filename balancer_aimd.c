@@ -32,11 +32,11 @@
 #include <stdlib.h>
 #include <glib.h>  // for MIN/MAX
 
-// AIMD parameters
-#define AIMD_INCR_RATE      (50 * 1000)   // Additive increase: 50 Kbps per step
-#define AIMD_DECR_MULT      0.75          // Multiplicative decrease: reduce to 75%
-#define AIMD_INCR_INTERVAL  500           // ms between increases
-#define AIMD_DECR_INTERVAL  200           // ms between decreases
+// Default AIMD parameters (used if config values are 0)
+#define AIMD_DEF_INCR_RATE      (50 * 1000)   // Additive increase: 50 Kbps per step
+#define AIMD_DEF_DECR_MULT      0.75          // Multiplicative decrease: reduce to 75%
+#define AIMD_DEF_INCR_INTERVAL  500           // ms between increases
+#define AIMD_DEF_DECR_INTERVAL  200           // ms between decreases
 
 // Congestion detection thresholds
 #define AIMD_RTT_MULT       1.5           // Congestion if RTT > baseline * 1.5
@@ -51,6 +51,12 @@ typedef struct {
     int max_bitrate;
     int cur_bitrate;
     int srt_latency;
+
+    // Tuning parameters (from config)
+    int incr_step;
+    double decr_mult;
+    int incr_interval;
+    int decr_interval;
 
     // RTT baseline tracking
     double rtt_baseline;
@@ -73,6 +79,16 @@ static void* aimd_init(const BalancerConfig *config) {
     state->max_bitrate = config->max_bitrate;
     state->cur_bitrate = config->max_bitrate;  // Start optimistic
     state->srt_latency = config->srt_latency;
+
+    // Tuning parameters (use defaults if 0)
+    state->incr_step = (config->aimd_incr_step > 0) ?
+                       config->aimd_incr_step : AIMD_DEF_INCR_RATE;
+    state->decr_mult = (config->aimd_decr_mult > 0.0) ?
+                       config->aimd_decr_mult : AIMD_DEF_DECR_MULT;
+    state->incr_interval = (config->aimd_incr_interval > 0) ?
+                           config->aimd_incr_interval : AIMD_DEF_INCR_INTERVAL;
+    state->decr_interval = (config->aimd_decr_interval > 0) ?
+                           config->aimd_decr_interval : AIMD_DEF_DECR_INTERVAL;
 
     state->rtt_baseline = 0.0;
     state->next_incr = 0;
@@ -106,7 +122,7 @@ static BalancerOutput aimd_step(void *state_ptr, const BalancerInput *input) {
     // Emergency: RTT exceeds latency/3
     if (input->rtt >= state->srt_latency / 3) {
         state->cur_bitrate = state->min_bitrate;
-        state->next_decr = input->timestamp + AIMD_DECR_INTERVAL;
+        state->next_decr = input->timestamp + state->decr_interval;
         congested = 1;
     }
     // Congestion: RTT exceeds threshold or buffer too full
@@ -116,13 +132,13 @@ static BalancerOutput aimd_step(void *state_ptr, const BalancerInput *input) {
 
     if (congested && input->timestamp > state->next_decr) {
         // Multiplicative decrease
-        state->cur_bitrate = (int)(state->cur_bitrate * AIMD_DECR_MULT);
-        state->next_decr = input->timestamp + AIMD_DECR_INTERVAL;
+        state->cur_bitrate = (int)(state->cur_bitrate * state->decr_mult);
+        state->next_decr = input->timestamp + state->decr_interval;
 
     } else if (!congested && input->timestamp > state->next_incr) {
         // Additive increase
-        state->cur_bitrate += AIMD_INCR_RATE;
-        state->next_incr = input->timestamp + AIMD_INCR_INTERVAL;
+        state->cur_bitrate += state->incr_step;
+        state->next_incr = input->timestamp + state->incr_interval;
     }
 
     // Clamp to valid range

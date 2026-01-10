@@ -28,12 +28,22 @@
 // Convert RTT to expected buffer size based on throughput
 #define RTT_TO_BS(ctx, rtt) ((ctx->throughput / 8) * (rtt) / ctx->srt_pkt_size)
 
-void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br, int latency, int pkt_size) {
+void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br,
+                          int latency, int pkt_size,
+                          int incr_step, int decr_step,
+                          int incr_interval, int decr_interval) {
     // Configuration
     ctx->min_bitrate = min_br;
     ctx->max_bitrate = max_br;
     ctx->srt_latency = latency;
     ctx->srt_pkt_size = pkt_size;
+
+    // Tuning parameters (use defaults if 0)
+    ctx->incr_step = (incr_step > 0) ? incr_step : BITRATE_INCR_MIN;
+    ctx->decr_step = (decr_step > 0) ? decr_step : BITRATE_DECR_MIN;
+    ctx->incr_interval = (incr_interval > 0) ? incr_interval : BITRATE_INCR_INT;
+    ctx->decr_interval = (decr_interval > 0) ? decr_interval : BITRATE_DECR_INT;
+    ctx->decr_fast_interval = BITRATE_DECR_FAST_INT;  // Not configurable yet
 
     // Start at max bitrate
     ctx->cur_bitrate = max_br;
@@ -166,26 +176,26 @@ int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
     if (bitrate > ctx->min_bitrate && (rtt_int >= (ctx->srt_latency / 3) || bs > bs_th3)) {
         // Emergency: drop to minimum
         bitrate = ctx->min_bitrate;
-        ctx->next_bitrate_decr = timestamp + BITRATE_DECR_INT;
+        ctx->next_bitrate_decr = timestamp + ctx->decr_interval;
 
     } else if (timestamp > ctx->next_bitrate_decr &&
                (rtt_int > (ctx->srt_latency / 5) || bs > bs_th2 || pkt_loss_congestion)) {
         // Heavy congestion: fast decrease (now includes packet loss)
-        bitrate -= BITRATE_DECR_MIN + bitrate / BITRATE_DECR_SCALE;
-        ctx->next_bitrate_decr = timestamp + BITRATE_DECR_FAST_INT;
+        bitrate -= ctx->decr_step + bitrate / BITRATE_DECR_SCALE;
+        ctx->next_bitrate_decr = timestamp + ctx->decr_fast_interval;
 
     } else if (timestamp > ctx->next_bitrate_decr &&
                (rtt_int > rtt_th_max || bs > bs_th1)) {
         // Light congestion: slow decrease
-        bitrate -= BITRATE_DECR_MIN;
-        ctx->next_bitrate_decr = timestamp + BITRATE_DECR_INT;
+        bitrate -= ctx->decr_step;
+        ctx->next_bitrate_decr = timestamp + ctx->decr_interval;
 
     } else if (timestamp > ctx->next_bitrate_incr &&
                rtt_int < rtt_th_min && ctx->rtt_avg_delta < RTT_STABLE_DELTA &&
                !pkt_loss_congestion) {
         // Stable: increase (only if no packet loss)
-        bitrate += BITRATE_INCR_MIN + bitrate / BITRATE_INCR_SCALE;
-        ctx->next_bitrate_incr = timestamp + BITRATE_INCR_INT;
+        bitrate += ctx->incr_step + bitrate / BITRATE_INCR_SCALE;
+        ctx->next_bitrate_incr = timestamp + ctx->incr_interval;
     }
 
     // Clamp to valid range

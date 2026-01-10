@@ -53,7 +53,11 @@ static void* adaptive_init(const BalancerConfig *config) {
                          config->min_bitrate,
                          config->max_bitrate,
                          config->srt_latency,
-                         config->srt_pkt_size);
+                         config->srt_pkt_size,
+                         config->adaptive_incr_step,
+                         config->adaptive_decr_step,
+                         config->adaptive_incr_interval,
+                         config->adaptive_decr_interval);
 
     return state;
 }

@@ -16,10 +16,16 @@ The core value proposition is **adaptive bitrate control**: belacoder monitors S
 ```
 belacoder/
 ├── belacoder.c           # Main application (GStreamer + SRT integration)
-├── bitrate_control.c     # Adaptive bitrate algorithm implementation
-├── bitrate_control.h     # Bitrate controller API and constants
+├── config.c/h            # INI config file parser
+├── balancer.h            # Balancer algorithm interface
+├── balancer_adaptive.c   # Default adaptive algorithm (RTT/buffer-based)
+├── balancer_fixed.c      # Fixed bitrate (no adaptation)
+├── balancer_aimd.c       # AIMD algorithm (TCP-style)
+├── balancer_registry.c   # Algorithm registration and lookup
+├── bitrate_control.c/h   # Adaptive algorithm internals (BitrateContext)
 ├── Makefile              # Build system (links gstreamer + libsrt via pkg-config)
 ├── Dockerfile            # Container build (installs CERALIVE/srt fork)
+├── belacoder.conf.example # Example configuration file
 ├── camlink_workaround/   # Git submodule for Elgato Cam Link quirks
 ├── pipeline/             # GStreamer pipeline templates by platform
 │   ├── generic/          # Software encoding (x264)
@@ -34,7 +40,12 @@ belacoder/
 | Module | Files | Responsibility |
 |--------|-------|----------------|
 | Main | `belacoder.c` | GStreamer pipeline, SRT connection, CLI parsing, main loop |
-| Bitrate Control | `bitrate_control.c/h` | Adaptive bitrate algorithm (pure logic, no GStreamer dependency) |
+| Config | `config.c/h` | INI config file parsing, runtime reload via SIGHUP |
+| Balancer Interface | `balancer.h` | Algorithm interface (`BalancerAlgorithm` struct) |
+| Balancer Registry | `balancer_registry.c` | Algorithm lookup by name |
+| Adaptive Algorithm | `balancer_adaptive.c`, `bitrate_control.c/h` | RTT/buffer-based adaptive control (default) |
+| Fixed Algorithm | `balancer_fixed.c` | Constant bitrate, no adaptation |
+| AIMD Algorithm | `balancer_aimd.c` | TCP-style congestion control |
 | Camlink Workaround | `camlink_workaround/` | USB quirks for Elgato Cam Link |
 
 ## Runtime Dataflow
@@ -100,7 +111,7 @@ flowchart TD
 belacoder uses async-signal-safe signal handling:
 
 - **SIGTERM/SIGINT**: Handled via `g_unix_signal_add()` which safely integrates with the GLib main loop
-- **SIGHUP**: Uses a volatile flag (`reload_bitrate_flag`) that is checked in `stall_check()` to safely reload bitrate settings
+- **SIGHUP**: Uses a volatile flag (`reload_config_flag`) that is checked in `stall_check()` to safely reload config file or bitrate settings
 - **SIGALRM**: Used as a fallback to force exit if the pipeline fails to stop gracefully
 
 ## Resource Management
@@ -117,12 +128,15 @@ All resources are properly cleaned up on exit:
 | Component | Location | Responsibility |
 |-----------|----------|----------------|
 | CLI parser | `belacoder.c:main()` | Parse options, validate ranges |
+| Config loader | `config.c` | Parse INI config file, reload on SIGHUP |
 | Pipeline loader | `belacoder.c:main()` | Read pipeline file, call `gst_parse_launch` |
 | SRT sender | `belacoder.c:new_buf_cb()` | Chunk samples into SRT packets, call `srt_send` |
-| Bitrate controller | `bitrate_control.c:bitrate_update()` | Adaptive bitrate based on RTT + send buffer |
-| Bitrate context | `bitrate_control.h:BitrateContext` | All algorithm state in a single struct |
+| Balancer interface | `balancer.h:BalancerAlgorithm` | Pluggable algorithm interface (init/step/cleanup) |
+| Balancer registry | `balancer_registry.c` | Algorithm lookup by name, default selection |
+| Adaptive algorithm | `balancer_adaptive.c`, `bitrate_control.c` | RTT/buffer-based adaptive control |
+| AIMD algorithm | `balancer_aimd.c` | TCP-style congestion control |
 | Connection monitor | `belacoder.c:connection_housekeeping()` | ACK timeout detection, stats polling |
-| Stall detector | `belacoder.c:stall_check()` | Exit on pipeline stall |
+| Stall detector | `belacoder.c:stall_check()` | Exit on pipeline stall, config reload |
 
 ## GStreamer ↔ SRT Boundary
 

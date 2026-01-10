@@ -1,20 +1,71 @@
-# Bitrate Control Algorithm
+# Bitrate Control
 
-This document describes the adaptive bitrate control algorithm implemented in belacoder. The algorithm monitors SRT connection quality and adjusts the video encoder's bitrate in real-time to match available network capacity.
+belacoder includes a pluggable bitrate control system that adjusts the video encoder's bitrate in real-time based on network conditions.
+
+## Available Algorithms
+
+| Algorithm | Description | Best For |
+|-----------|-------------|----------|
+| `adaptive` | RTT and buffer-based control (default) | General use, mobile streaming |
+| `fixed` | Constant bitrate, no adaptation | Testing, stable networks |
+| `aimd` | TCP-style AIMD (Additive Increase Multiplicative Decrease) | Fair bandwidth sharing |
+
+Select algorithm via CLI or config file:
+```bash
+# CLI
+./belacoder -a aimd pipeline.txt host 4000
+
+# Config file
+[general]
+balancer = adaptive
+```
 
 ## Module Structure
 
-The bitrate control logic is isolated in its own module:
-
 | File | Purpose |
 |------|---------|
-| `bitrate_control.h` | Public API, `BitrateContext` struct, all algorithm constants |
-| `bitrate_control.c` | Algorithm implementation (pure logic, no GStreamer dependency) |
+| `balancer.h` | Algorithm interface (`BalancerAlgorithm` struct) |
+| `balancer_adaptive.c` | Default adaptive algorithm |
+| `balancer_fixed.c` | Fixed bitrate (no adaptation) |
+| `balancer_aimd.c` | AIMD algorithm |
+| `balancer_registry.c` | Algorithm registration and lookup |
+| `bitrate_control.h` | Adaptive algorithm internals (BitrateContext, constants) |
+| `bitrate_control.c` | Adaptive algorithm implementation |
 
-This separation allows the algorithm to be:
-- **Tested in isolation** without GStreamer
-- **Reused** in other applications
-- **Swapped** for alternative algorithms in the future
+## Configuration
+
+All algorithms can be tuned via the config file:
+
+```ini
+[general]
+min_bitrate = 500     # Kbps (applies to all algorithms)
+max_bitrate = 6000    # Kbps
+
+[adaptive]
+incr_step = 30        # Increase step (Kbps)
+decr_step = 100       # Decrease step (Kbps)
+incr_interval = 500   # ms between increases
+decr_interval = 200   # ms between decreases
+
+[aimd]
+incr_step = 50        # Additive increase (Kbps)
+decr_mult = 0.75      # Multiplicative decrease (0.75 = reduce to 75%)
+```
+
+Reload config at runtime: `kill -HUP $(pidof belacoder)`
+
+---
+
+# Adaptive Algorithm Details
+
+The default `adaptive` algorithm monitors SRT connection quality and makes decisions based on:
+
+1. **RTT (Round-Trip Time)** from SRT statistics
+2. **Send buffer occupancy** from the SRT socket
+3. **Packet loss** detection
+4. **Throughput estimate** from SRT statistics
+
+The goal is to maximize video quality (high bitrate) while avoiding congestion.
 
 ## Overview
 
@@ -82,13 +133,24 @@ typedef struct {
 ### API Functions
 
 ```c
-// Initialize context with configuration
-void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br, int latency, int pkt_size);
+// Initialize context with configuration and tuning parameters
+void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br,
+                          int latency, int pkt_size,
+                          int incr_step, int decr_step,
+                          int incr_interval, int decr_interval);
 
 // Update bitrate based on current SRT stats, returns new bitrate (rounded to 100 Kbps)
 int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
-                   double send_rate_mbps, uint64_t timestamp, BitrateResult *result);
+                   double send_rate_mbps, uint64_t timestamp,
+                   int64_t pkt_loss_total, int64_t pkt_retrans_total,
+                   BitrateResult *result);
 ```
+
+Tuning parameters (pass 0 to use defaults):
+- `incr_step` - Bitrate increase step (bps, default: 30000)
+- `decr_step` - Bitrate decrease step (bps, default: 100000)
+- `incr_interval` - Min interval between increases (ms, default: 500)
+- `decr_interval` - Min interval between decreases (ms, default: 200)
 
 ## Smoothing Constants
 
@@ -305,15 +367,15 @@ flowchart TD
 3. **Uses multiple signals**: Combines RTT and buffer occupancy for robustness
 4. **Adaptive thresholds**: Thresholds adjust based on observed conditions
 
-## Limitations and Improvement Opportunities
+## Limitations and Future Improvements
 
-1. **Single algorithm**: No way to select alternative strategies at runtime (see GitHub Issue #3)
+1. ~~**Single algorithm**~~: ✅ Resolved - Multiple algorithms now available via `-a` flag
 2. **Fixed smoothing factors**: May not adapt well to different network characteristics
 3. **Latency coupling**: Thresholds tied to configured SRT latency (1/3, 1/5)
 4. **No bandwidth probing**: Only increases when conditions are stable, no active probing
 
-> **Note**: The module structure now makes it easier to implement alternative algorithms.
-> The `BitrateContext` pattern allows swapping implementations without touching `belacoder.c`.
+> **Note**: New algorithms can be added by implementing the `BalancerAlgorithm` interface
+> in `balancer.h` and registering in `balancer_registry.c`.
 
 
 ## ACK Timeout Detection

@@ -77,6 +77,13 @@ typedef struct {
     int srt_latency;
     int srt_pkt_size;
 
+    // Tuning parameters (can be customized via config)
+    int incr_step;        // Bitrate increase step (bps)
+    int decr_step;        // Bitrate decrease step (bps)
+    int incr_interval;    // Min interval between increases (ms)
+    int decr_interval;    // Min interval between decreases (ms)
+    int decr_fast_interval; // Heavy congestion decrease interval (ms)
+
     // Current bitrate
     int cur_bitrate;
 
@@ -122,8 +129,20 @@ typedef struct {
 
 /*
  * Initialize a bitrate context with configuration values
+ *
+ * Parameters:
+ *   min_br, max_br - Bitrate limits (bps)
+ *   latency        - SRT latency (ms)
+ *   pkt_size       - SRT packet size (bytes)
+ *   incr_step      - Bitrate increase step (bps, 0 = use default)
+ *   decr_step      - Bitrate decrease step (bps, 0 = use default)
+ *   incr_interval  - Min interval between increases (ms, 0 = use default)
+ *   decr_interval  - Min interval between decreases (ms, 0 = use default)
  */
-void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br, int latency, int pkt_size);
+void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br,
+                          int latency, int pkt_size,
+                          int incr_step, int decr_step,
+                          int incr_interval, int decr_interval);
 
 /*
  * Update the bitrate based on current SRT statistics

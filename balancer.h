@@ -30,6 +30,18 @@ typedef struct {
     int max_bitrate;      // Maximum allowed bitrate (bps)
     int srt_latency;      // Configured SRT latency (ms)
     int srt_pkt_size;     // SRT packet size (bytes)
+
+    // Adaptive algorithm tuning (bps for bitrate values, ms for intervals)
+    int adaptive_incr_step;      // Bitrate increase step (bps, default: 30000)
+    int adaptive_decr_step;      // Bitrate decrease step (bps, default: 100000)
+    int adaptive_incr_interval;  // Min interval between increases (ms, default: 500)
+    int adaptive_decr_interval;  // Min interval between decreases (ms, default: 200)
+
+    // AIMD algorithm tuning
+    int aimd_incr_step;          // Additive increase (bps, default: 50000)
+    double aimd_decr_mult;       // Multiplicative decrease (0.0-1.0, default: 0.75)
+    int aimd_incr_interval;      // Min interval between increases (ms, default: 500)
+    int aimd_decr_interval;      // Min interval between decreases (ms, default: 200)
 } BalancerConfig;
 
 /*
