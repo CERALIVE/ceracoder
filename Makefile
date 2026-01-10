@@ -70,10 +70,16 @@ test_srt_live_transmit: $(TESTDIR)/test_srt_live_transmit.o $(SRCDIR)/net/srt_cl
 $(TESTDIR)/%.o: $(TESTDIR)/%.c
 	$(CC) $(TEST_CFLAGS) -c $< -o $@
 
+# Static analysis with clang-tidy
+lint:
+	@echo "Running clang-tidy static analysis..."
+	@clang-tidy $(SRCDIR)/**/*.c $(SRCDIR)/*.c \
+		-- $(CFLAGS)
+
 clean:
 	rm -f belacoder \
 		$(SRCDIR)/*.o $(SRCDIR)/core/*.o $(SRCDIR)/io/*.o $(SRCDIR)/net/*.o $(SRCDIR)/gst/*.o \
 		$(TESTDIR)/*.o $(TESTDIR)/test_balancer $(TESTDIR)/test_integration $(TESTDIR)/test_srt $(TESTDIR)/test_srt_live_transmit camlink_workaround/*.o
 
-.PHONY: all submodule clean test test_all test_balancer test_integration test_srt test_srt_live_transmit
+.PHONY: all submodule clean test test_all test_balancer test_integration test_srt test_srt_live_transmit lint
 

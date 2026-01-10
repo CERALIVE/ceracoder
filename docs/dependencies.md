@@ -233,6 +233,37 @@ make test_all
 
 **Note:** The `test_srt_live_transmit` test gracefully skips all tests if `srt-live-transmit` is not found in PATH. This allows CI/CD systems and developers without the binary to still run other tests successfully.
 
+## Development Dependencies (Optional)
+
+These tools are useful for development and code quality but not required for building or running belacoder:
+
+| Tool | Ubuntu/Debian Package | Arch Package | Purpose |
+|------|----------------------|--------------|---------|
+| clang-tidy | `clang-tidy` | `clang` (includes clang-tidy) | Static code analysis |
+
+### Installing Development Tools
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install clang-tidy
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S clang  # Includes clang-tidy
+```
+
+### Running Static Analysis
+
+```bash
+# Run clang-tidy on all source files
+make lint
+```
+
+The static analysis checks for common bugs, performance issues, and code quality problems. The project includes a [`.clang-tidy`](../.clang-tidy) configuration that defines which checks are enabled.
+
+**Note:** Static analysis runs automatically in CI on every push and pull request via the [Static Analysis GitHub workflow](../.github/workflows/static-analysis.yml).
+
 ## Complete Install (Arch Linux)
 
 ```bash
