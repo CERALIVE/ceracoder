@@ -1,47 +1,49 @@
 # belacoder configuration file
-# All bitrates are in Kbps (e.g., 6000 = 6 Mbps)
+#
 # Reload while running with: kill -HUP $(pidof belacoder)
 
 [general]
-# Minimum and maximum bitrate (Kbps)
+# Bitrate limits (Kbps)
+# Examples: 500 = 500 Kbps, 6000 = 6 Mbps, 12000 = 12 Mbps
 min_bitrate = 500
 max_bitrate = 6000
 
-# Balancer algorithm: adaptive, fixed, aimd
+# Balancer algorithm - controls how bitrate adapts to network conditions
+# Options:
+#   adaptive - RTT and buffer-based control, reacts to congestion (default)
+#   fixed    - Constant bitrate, no adaptation (uses max_bitrate)
+#   aimd     - TCP-style Additive Increase Multiplicative Decrease
 balancer = adaptive
 
 [srt]
-# SRT latency in milliseconds
+# SRT latency buffer (milliseconds)
+# Higher = more resilient to packet loss, but adds delay
+# Range: 100-10000, typical: 1500-3000 for mobile streaming
 latency = 2000
 
-# Optional SRT stream ID
-# stream_id = mystreamkey
+# Optional SRT stream ID for authentication
+# stream_id = your_stream_key_here
 
-[adaptive]
-# Bitrate increase step (Kbps)
-incr_step = 30
+# ============================================================================
+# ALGORITHM TUNING (future use - not yet implemented)
+#
+# These sections define tuning parameters for each algorithm.
+# Currently the algorithms use built-in defaults:
+#   - adaptive: incr=30 Kbps, decr=100 Kbps, intervals=500/200 ms
+#   - aimd: incr=50 Kbps, decr_mult=0.75
+#
+# Support for runtime tuning is planned for a future release.
+# ============================================================================
 
-# Bitrate decrease step (Kbps)
-decr_step = 100
+#[adaptive]
+# incr_step = 30        # Bitrate increase step (Kbps)
+# decr_step = 100       # Bitrate decrease step (Kbps)
+# incr_interval = 500   # Minimum ms between increases
+# decr_interval = 200   # Minimum ms between decreases
+# loss_threshold = 0.5  # Packet loss per interval to trigger decrease
 
-# Minimum interval between increases (ms)
-incr_interval = 500
-
-# Minimum interval between decreases (ms)
-decr_interval = 200
-
-# Packet loss threshold (packets per interval)
-loss_threshold = 0.5
-
-[aimd]
-# Additive increase step (Kbps)
-incr_step = 50
-
-# Multiplicative decrease factor (0.0-1.0)
-decr_mult = 0.75
-
-# Minimum interval between increases (ms)
-incr_interval = 500
-
-# Minimum interval between decreases (ms)
-decr_interval = 200
+#[aimd]
+# incr_step = 50        # Additive increase (Kbps)
+# decr_mult = 0.75      # Multiplicative decrease (0.0-1.0, e.g., 0.75 = 25% drop)
+# incr_interval = 500   # Minimum ms between increases
+# decr_interval = 200   # Minimum ms between decreases
