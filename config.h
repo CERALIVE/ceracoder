@@ -55,7 +55,7 @@ typedef struct {
 
     // SRT settings
     int srt_latency;        // SRT latency (ms, default: 2000)
-    char stream_id[256];    // SRT stream ID (optional)
+    // Note: stream_id is CLI-only (-s flag)
 
     // Algorithm-specific settings
     AdaptiveConfig adaptive;

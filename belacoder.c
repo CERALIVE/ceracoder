@@ -703,10 +703,6 @@ int main(int argc, char** argv) {
     if (g_config.srt_latency > 0) {
       srt_latency = g_config.srt_latency;
     }
-    // Apply stream_id from config (CLI -s will override below)
-    if (g_config.stream_id[0] != '\0' && stream_id == NULL) {
-      stream_id = g_config.stream_id;
-    }
   }
 
   // Legacy bitrate file support (overrides config if both specified)

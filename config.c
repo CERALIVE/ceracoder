@@ -52,7 +52,6 @@ void config_init_defaults(BelacoderConfig *cfg) {
 
     // SRT
     cfg->srt_latency = DEF_SRT_LATENCY;
-    cfg->stream_id[0] = '\0';
 
     // Adaptive
     cfg->adaptive.incr_step = DEF_ADAPTIVE_INCR_STEP;
@@ -97,9 +96,8 @@ static void parse_line(BelacoderConfig *cfg, const char *section,
     else if (strcmp(section, "srt") == 0) {
         if (strcmp(key, "latency") == 0) {
             cfg->srt_latency = atoi(value);
-        } else if (strcmp(key, "stream_id") == 0) {
-            strncpy(cfg->stream_id, value, sizeof(cfg->stream_id) - 1);
         }
+        // Note: stream_id is CLI-only (-s flag), not in config
     }
     // [adaptive] section
     else if (strcmp(section, "adaptive") == 0) {
