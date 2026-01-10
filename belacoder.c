@@ -32,6 +32,8 @@
 #include <srt.h>
 #include <srt/access_control.h>
 
+#include "bitrate_control.h"
+
 // Ensure SRT version is at least 1.4.0 (required for SRTO_RETRANSMITALGO)
 #ifndef SRT_VERSION_VALUE
 #define SRT_VERSION_VALUE SRT_MAKE_VERSION_VALUE(SRT_VERSION_MAJOR, SRT_VERSION_MINOR, SRT_VERSION_PATCH)
@@ -40,50 +42,11 @@
 #error "SRT 1.4.0 or later required (for SRTO_RETRANSMITALGO)"
 #endif
 
+// SRT configuration
 #define SRT_MAX_OHEAD 20     // maximum SRT transmission overhead (when using appsink)
 #define SRT_ACK_TIMEOUT 6000 // maximum interval between received ACKs before the connection is TOed
 
-#define MIN_BITRATE (300 * 1000)
-#define ABS_MAX_BITRATE (30 * 1000 * 1000)
-#define DEF_BITRATE (6 * 1000 * 1000)
-
-#define BITRATE_UPDATE_INT 20
-#define BITRATE_INCR_MIN       (30*1000)  // the minimum bitrate increment step (bps)
-#define BITRATE_INCR_INT       500        // the minimum interval for increasing the bitrate (ms)
-#define BITRATE_INCR_SCALE     30         // the bitrate is increased by
-                                          // BITRATE_INCR_MIN + cur_bitrate/BITRATE_INCR_SCALE
-
-#define BITRATE_DECR_MIN       (100*1000) // the minimum value to decrease the bitrate by (bps)
-#define BITRATE_DECR_INT       200        // (light congestion) min interval for decreasing the bitrate (ms)
-#define BITRATE_DECR_FAST_INT  250        // (heavy congestion) min interval for decreasing the bitrate (ms)
-#define BITRATE_DECR_SCALE     10         // under heavy congestion, the bitrate is decreased by
-                                          // BITRATE_DECR_MIN + cur_bitrate/BITRATE_DECR_SCALE
-
-// Exponential moving average smoothing factors
-#define EMA_SLOW           0.99   // for bs_avg, rtt_avg, jitter decay
-#define EMA_FAST           0.01   // complement of EMA_SLOW (1 - 0.99)
-#define EMA_RTT_DELTA      0.8    // for rtt_avg_delta smoothing
-#define EMA_RTT_DELTA_NEW  0.2    // complement (1 - 0.8)
-#define EMA_THROUGHPUT     0.97   // for throughput smoothing
-#define EMA_THROUGHPUT_NEW 0.03   // complement (1 - 0.97)
-
-// RTT tracking constants
-#define RTT_MIN_DRIFT      1.001  // per-sample drift rate for min RTT tracking
-#define RTT_IGNORE_VALUE   100    // RTT value that indicates no valid measurement
-#define RTT_INITIAL        300    // initial prev_rtt value
-#define RTT_MIN_INITIAL    200.0  // initial rtt_min value
-
-// Threshold multipliers for congestion detection
-#define BS_TH3_MULT        4      // heavy congestion: (bs_avg + bs_jitter) * 4
-#define BS_TH2_JITTER_MULT 3.0    // medium congestion jitter multiplier
-#define BS_TH1_JITTER_MULT 2.5    // light congestion jitter multiplier
-#define BS_TH_MIN          50     // minimum buffer threshold
-#define RTT_JITTER_MULT    4      // rtt_th_max jitter multiplier
-#define RTT_AVG_PERCENT    15     // rtt_th_max percentage of average (15%)
-#define RTT_STABLE_DELTA   0.01   // max rtt_avg_delta for stable conditions
-#define RTT_MIN_JITTER     1      // minimum jitter for rtt_th_min calculation
-
-// settings ranges
+// Settings ranges
 #define TS_PKT_SIZE 188
 #define REDUCED_SRT_PKT_SIZE ((TS_PKT_SIZE)*6)
 #define DEFAULT_SRT_PKT_SIZE ((TS_PKT_SIZE)*7)
@@ -117,9 +80,10 @@ int enc_bitrate_div = 1;
 
 int av_delay = 0;
 
-int min_bitrate = MIN_BITRATE;
-int max_bitrate = DEF_BITRATE;
-int cur_bitrate = MIN_BITRATE;
+// Bitrate control context (replaces individual bitrate globals)
+BitrateContext bitrate_ctx;
+int min_bitrate = MIN_BITRATE;  // Keep for read_bitrate_file compatibility
+int max_bitrate = DEF_BITRATE;  // Keep for read_bitrate_file compatibility
 
 char *bitrate_filename = NULL;
 
@@ -265,6 +229,9 @@ int read_bitrate_file() {
   fclose(f);
   min_bitrate = br[0];
   max_bitrate = br[1];
+  // Update context if initialized
+  bitrate_ctx.min_bitrate = min_bitrate;
+  bitrate_ctx.max_bitrate = max_bitrate;
   return 0;
 
 ret_err:
@@ -273,128 +240,30 @@ ret_err:
   return -2;
 }
 
-#define RTT_TO_BS(rtt) ((throughput / 8) * (rtt) / srt_pkt_size)
-void update_bitrate(SRT_TRACEBSTATS *stats, uint64_t ctime) {
-  /*
-   * Send buffer size stats
-   */
+void do_bitrate_update(SRT_TRACEBSTATS *stats, uint64_t ctime) {
+  // Get send buffer size from SRT
   int bs = -1;
   int sz = sizeof(bs);
   int ret = srt_getsockflag(sock, SRTO_SNDDATA, &bs, &sz);
   if (ret != 0 || bs < 0) return;
 
-  // Rolling average
-  static double bs_avg = 0;
-  bs_avg = bs_avg * EMA_SLOW + (double)bs * EMA_FAST;
-
-  // Update the buffer size jitter
-  static double bs_jitter = 0;
-  static int prev_bs = 0;
-  bs_jitter = EMA_SLOW * bs_jitter;
-  int delta_bs = bs - prev_bs;
-  if (delta_bs > bs_jitter) {
-    bs_jitter = (double)delta_bs;
-  }
-  prev_bs = bs;
-
-
-  /*
-   * RTT stats
-   */
-  int rtt = (int)stats->msRTT;
-
-  // Update the average RTT
-  static double rtt_avg = 0;
-  if (rtt_avg == 0.0) {
-    rtt_avg = (double)rtt;
-  } else {
-    rtt_avg = rtt_avg * EMA_SLOW + EMA_FAST * (double)rtt;
-  }
-
-  // Update the average RTT delta
-  static double rtt_avg_delta = 0;
-  static int prev_rtt = RTT_INITIAL;
-  double delta_rtt = (double)(rtt - prev_rtt);
-  rtt_avg_delta = rtt_avg_delta * EMA_RTT_DELTA + delta_rtt * EMA_RTT_DELTA_NEW;
-  prev_rtt = rtt;
-
-  // Update the minimum RTT
-  static double rtt_min = RTT_MIN_INITIAL;
-  rtt_min *= RTT_MIN_DRIFT;
-  if (rtt != RTT_IGNORE_VALUE && rtt < rtt_min && rtt_avg_delta < 1.0) {
-    rtt_min = rtt;
-  }
-
-  // Update the RTT jitter
-  static double rtt_jitter = 0;
-  rtt_jitter *= EMA_SLOW;
-  if (delta_rtt > rtt_jitter) {
-    rtt_jitter = delta_rtt;
-  }
-
-
-  /*
-   * Rolling average of the network throughput
-   */
-  static double throughput = 0.0;
-  throughput *= EMA_THROUGHPUT;
-  throughput += ((double)stats->mbpsSendRate * 1000.0 * 1000.0 / 1024.0) * EMA_THROUGHPUT_NEW;
-
-
-  debug("bs: %d bs_avg: %f, bs_jitter %f, bitrate %d rtt %d, delta rtt %.0f, avg delta %.1f, avg rtt %.1f, rtt_jitter, %.2f, rtt_min %.1f\n",
-        bs, bs_avg, bs_jitter, cur_bitrate, rtt, delta_rtt, rtt_avg_delta, rtt_avg, rtt_jitter, rtt_min);
-
-
-  static uint64_t next_bitrate_incr = 0;
-  static uint64_t next_bitrate_decr = 0;
-
-  // Use int64_t for bitrate calculations to prevent overflow at high bitrates
-  int64_t bitrate = cur_bitrate;
-  int bs_th3 = (bs_avg + bs_jitter) * BS_TH3_MULT;
-  int bs_th2 = max(BS_TH_MIN, bs_avg + max(bs_jitter * BS_TH2_JITTER_MULT, bs_avg));
-  bs_th2 = min(bs_th2, RTT_TO_BS(srt_latency/2));
-  int bs_th1 = max(BS_TH_MIN, bs_avg + bs_jitter * BS_TH1_JITTER_MULT);
-  int rtt_th_max = rtt_avg + max(rtt_jitter * RTT_JITTER_MULT, rtt_avg * RTT_AVG_PERCENT / 100);
-  int rtt_th_min = rtt_min + max(RTT_MIN_JITTER, rtt_jitter * 2);
-
-
-  if (bitrate > min_bitrate && (rtt >= (srt_latency / 3) || bs > bs_th3)) {
-    bitrate = min_bitrate;
-    next_bitrate_decr = ctime + BITRATE_DECR_INT;
-
-  } else if (ctime > next_bitrate_decr &&
-      (rtt > (srt_latency / 5) || bs > bs_th2)) {
-    bitrate -= BITRATE_DECR_MIN + bitrate/BITRATE_DECR_SCALE;
-    next_bitrate_decr = ctime + BITRATE_DECR_FAST_INT;
-
-  } else if (ctime > next_bitrate_decr &&
-             (rtt > rtt_th_max || bs > bs_th1)) {
-    bitrate -= BITRATE_DECR_MIN;
-    next_bitrate_decr = ctime + BITRATE_DECR_INT;
-
-  } else if (ctime > next_bitrate_incr &&
-             rtt < rtt_th_min && rtt_avg_delta < RTT_STABLE_DELTA) {
-    bitrate += BITRATE_INCR_MIN + bitrate / BITRATE_INCR_SCALE;
-    next_bitrate_incr = ctime + BITRATE_INCR_INT;
-  }
-
-  // Clamp to valid range and convert back to int
-  bitrate = min_max(bitrate, (int64_t)min_bitrate, (int64_t)max_bitrate);
-  cur_bitrate = (int)bitrate;
-
-  // round the bitrate we set to 100 kbps
-  int rounded_br = cur_bitrate / (100*1000) * (100*1000);
-
-  update_overlay(rounded_br, throughput, rtt, rtt_th_min, rtt_th_max, bs, bs_th1, bs_th2, bs_th3);
-
-  // Check if bitrate actually changed (comparing int64_t with original int value)
+  // Call the bitrate control module
+  BitrateResult result;
   static int prev_set_bitrate = 0;
-  if (rounded_br != prev_set_bitrate) {
-    prev_set_bitrate = rounded_br;
 
-    g_object_set (G_OBJECT(encoder), "bps", rounded_br / enc_bitrate_div, NULL);
+  int new_bitrate = bitrate_update(&bitrate_ctx, bs, stats->msRTT,
+                                   stats->mbpsSendRate, ctime, &result);
 
-    debug("set bitrate to %d, internal value %d\n", rounded_br, cur_bitrate);
+  // Update the overlay display
+  update_overlay(result.new_bitrate, result.throughput,
+                 result.rtt, result.rtt_th_min, result.rtt_th_max,
+                 result.bs, result.bs_th1, result.bs_th2, result.bs_th3);
+
+  // Set encoder bitrate if changed
+  if (new_bitrate != prev_set_bitrate) {
+    prev_set_bitrate = new_bitrate;
+    g_object_set(G_OBJECT(encoder), "bps", new_bitrate / enc_bitrate_div, NULL);
+    debug("set bitrate to %d, internal value %d\n", new_bitrate, bitrate_ctx.cur_bitrate);
   }
 }
 
@@ -423,7 +292,7 @@ gboolean connection_housekeeping(gpointer user_data) {
 
   // We can only update the bitrate when we have a configurable encoder
   if (GST_IS_ELEMENT(encoder)) {
-    update_bitrate(&stats, ctime);
+    do_bitrate_update(&stats, ctime);
   }
 
 r:
@@ -777,7 +646,8 @@ int main(int argc, char** argv) {
       exit_syntax();
     }
   }
-  cur_bitrate = max_bitrate;
+  // Initialize the bitrate controller
+  bitrate_context_init(&bitrate_ctx, min_bitrate, max_bitrate, srt_latency, srt_pkt_size);
   fprintf(stderr, "Max bitrate: %d\n", max_bitrate);
   signal(SIGHUP, sighup_handler);
 
@@ -787,7 +657,7 @@ int main(int argc, char** argv) {
     enc_bitrate_div = 1000;
   }
   if (GST_IS_ELEMENT(encoder)) {
-    g_object_set (G_OBJECT(encoder), "bps", cur_bitrate / enc_bitrate_div, NULL);
+    g_object_set (G_OBJECT(encoder), "bps", bitrate_ctx.cur_bitrate / enc_bitrate_div, NULL);
   } else {
     fprintf(stderr, "Failed to get an encoder element from the pipeline, "
                     "no dynamic bitrate control\n");
