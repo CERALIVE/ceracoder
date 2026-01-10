@@ -35,6 +35,7 @@
 
 #include "bitrate_control.h"
 #include "balancer.h"
+#include "config.h"
 
 // Ensure SRT version is at least 1.4.0 (required for SRTO_RETRANSMITALGO)
 #ifndef SRT_VERSION_VALUE
@@ -76,7 +77,7 @@ SRTSOCKET sock = -1;
 int quit = 0;
 
 // Signal flag for async-signal-safe SIGHUP handling
-volatile sig_atomic_t reload_bitrate_flag = 0;
+volatile sig_atomic_t reload_config_flag = 0;
 
 int enc_bitrate_div = 1;
 
@@ -90,7 +91,11 @@ int min_bitrate = MIN_BITRATE;  // Keep for read_bitrate_file compatibility
 int max_bitrate = DEF_BITRATE;  // Keep for read_bitrate_file compatibility
 
 char *bitrate_filename = NULL;
-char *balancer_name = NULL;  // CLI option for --balancer
+char *config_filename = NULL;  // CLI option for -c
+char *balancer_name = NULL;    // CLI option for -a (can override config)
+
+// Global configuration
+BelacoderConfig g_config;
 
 int srt_latency = DEF_SRT_LATENCY;
 int srt_pkt_size = DEFAULT_SRT_PKT_SIZE;
@@ -148,7 +153,7 @@ int read_bitrate_file(void);
 // Async-signal-safe handler for SIGHUP - just sets a flag
 void sighup_handler(int sig) {
   (void)sig;
-  reload_bitrate_flag = 1;
+  reload_config_flag = 1;
 }
 
 // GLib signal handler for SIGTERM/SIGINT (called from main loop, not signal context)
@@ -172,11 +177,32 @@ gboolean stall_check(gpointer data) {
     return TRUE;
   }
 
-  // Check for SIGHUP-triggered bitrate reload (async-signal-safe approach)
-  if (reload_bitrate_flag) {
-    reload_bitrate_flag = 0;
-    if (bitrate_filename) {
+  // Check for SIGHUP-triggered config reload (async-signal-safe approach)
+  if (reload_config_flag) {
+    reload_config_flag = 0;
+    int reloaded = 0;
+
+    // Reload config file if specified
+    if (config_filename != NULL) {
+      if (config_load(&g_config, config_filename) == 0) {
+        min_bitrate = config_bitrate_bps(g_config.min_bitrate);
+        max_bitrate = config_bitrate_bps(g_config.max_bitrate);
+        // Update balancer config
+        balancer_config.min_bitrate = min_bitrate;
+        balancer_config.max_bitrate = max_bitrate;
+        fprintf(stderr, "Config reloaded: %d - %d Kbps\n",
+                min_bitrate / 1000, max_bitrate / 1000);
+        reloaded = 1;
+      } else {
+        fprintf(stderr, "Failed to reload config file: %s\n", config_filename);
+      }
+    }
+
+    // Also reload legacy bitrate file if specified
+    if (bitrate_filename && !reloaded) {
       read_bitrate_file();
+      balancer_config.min_bitrate = min_bitrate;
+      balancer_config.max_bitrate = max_bitrate;
     }
   }
 
@@ -452,19 +478,21 @@ void exit_syntax() {
   fprintf(stderr, "Syntax: belacoder PIPELINE_FILE ADDR PORT [options]\n\n");
   fprintf(stderr, "Options:\n");
   fprintf(stderr, "  -v                  Print the version and exit\n");
+  fprintf(stderr, "  -c <config file>    Configuration file (INI format)\n");
   fprintf(stderr, "  -d <delay>          Audio-video delay in milliseconds\n");
   fprintf(stderr, "  -s <streamid>       SRT stream ID\n");
   fprintf(stderr, "  -l <latency>        SRT latency in milliseconds\n");
   fprintf(stderr, "  -r                  Reduced SRT packet size\n");
-  fprintf(stderr, "  -b <bitrate file>   Bitrate settings file, see below\n");
-  fprintf(stderr, "  -a <algorithm>      Bitrate balancer algorithm (default: adaptive)\n\n");
-  fprintf(stderr, "Bitrate settings file syntax:\n");
-  fprintf(stderr, "MIN BITRATE (bps)\n");
-  fprintf(stderr, "MAX BITRATE (bps)\n---\n");
-  fprintf(stderr, "example for 500 Kbps - 60000 Kbps:\n\n");
-  fprintf(stderr, "    printf \"500000\\n6000000\" > bitrate_file\n\n");
-  fprintf(stderr, "---\n");
-  fprintf(stderr, "Send SIGHUP to reload the bitrate settings while running.\n\n");
+  fprintf(stderr, "  -b <bitrate file>   Bitrate settings file (legacy, use -c instead)\n");
+  fprintf(stderr, "  -a <algorithm>      Bitrate balancer algorithm (overrides config)\n\n");
+  fprintf(stderr, "Config file example:\n");
+  fprintf(stderr, "  [general]\n");
+  fprintf(stderr, "  min_bitrate = 500    # Kbps\n");
+  fprintf(stderr, "  max_bitrate = 6000   # Kbps (6 Mbps)\n");
+  fprintf(stderr, "  balancer = adaptive\n\n");
+  fprintf(stderr, "  [srt]\n");
+  fprintf(stderr, "  latency = 2000       # ms\n\n");
+  fprintf(stderr, "Send SIGHUP to reload configuration while running.\n\n");
   balancer_print_available();
   exit(EXIT_FAILURE);
 }
@@ -580,13 +608,16 @@ int main(int argc, char** argv) {
   char *stream_id = NULL;
   srt_latency = DEF_SRT_LATENCY;
 
-  while ((opt = getopt(argc, argv, "a:d:b:s:l:rv")) != -1) {
+  while ((opt = getopt(argc, argv, "a:c:d:b:s:l:rv")) != -1) {
     switch (opt) {
       case 'a':
         balancer_name = optarg;
         break;
       case 'b':
         bitrate_filename = optarg;
+        break;
+      case 'c':
+        config_filename = optarg;
         break;
       case 'd': {
         long delay;
@@ -656,7 +687,25 @@ int main(int argc, char** argv) {
   g_signal_connect(bus, "message", (GCallback)cb_pipeline, gst_pipeline);
 
 
-  // Optional dynamic video bitrate
+  // Initialize configuration with defaults
+  config_init_defaults(&g_config);
+
+  // Load config file if specified
+  if (config_filename != NULL) {
+    if (config_load(&g_config, config_filename) != 0) {
+      fprintf(stderr, "Failed to load config file: %s\n", config_filename);
+      exit(EXIT_FAILURE);
+    }
+    fprintf(stderr, "Loaded config from %s\n", config_filename);
+    // Apply config to globals (Kbps -> bps conversion)
+    min_bitrate = config_bitrate_bps(g_config.min_bitrate);
+    max_bitrate = config_bitrate_bps(g_config.max_bitrate);
+    if (g_config.srt_latency > 0) {
+      srt_latency = g_config.srt_latency;
+    }
+  }
+
+  // Legacy bitrate file support (overrides config if both specified)
   if (bitrate_filename) {
     int ret;
     if ((ret = read_bitrate_file()) != 0) {
@@ -669,15 +718,16 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Select balancer algorithm
-  if (balancer_name != NULL) {
-    balancer_algo = balancer_find(balancer_name);
-    if (balancer_algo == NULL) {
+  // Select balancer algorithm (CLI -a overrides config)
+  const char *algo_name = balancer_name ? balancer_name : g_config.balancer;
+  balancer_algo = balancer_find(algo_name);
+  if (balancer_algo == NULL) {
+    // Try default if config had invalid name
+    if (balancer_name != NULL) {
       fprintf(stderr, "Unknown balancer algorithm: %s\n\n", balancer_name);
       balancer_print_available();
       exit(EXIT_FAILURE);
     }
-  } else {
     balancer_algo = balancer_get_default();
   }
   fprintf(stderr, "Balancer: %s\n", balancer_algo->name);
@@ -692,7 +742,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Failed to initialize balancer algorithm\n");
     exit(EXIT_FAILURE);
   }
-  fprintf(stderr, "Max bitrate: %d\n", max_bitrate);
+  fprintf(stderr, "Bitrate range: %d - %d Kbps\n", min_bitrate / 1000, max_bitrate / 1000);
   signal(SIGHUP, sighup_handler);
 
   encoder = gst_bin_get_by_name(GST_BIN(gst_pipeline), "venc_bps");

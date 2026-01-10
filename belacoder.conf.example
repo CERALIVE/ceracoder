@@ -1,0 +1,47 @@
+# belacoder configuration file
+# All bitrates are in Kbps (e.g., 6000 = 6 Mbps)
+# Reload while running with: kill -HUP $(pidof belacoder)
+
+[general]
+# Minimum and maximum bitrate (Kbps)
+min_bitrate = 500
+max_bitrate = 6000
+
+# Balancer algorithm: adaptive, fixed, aimd
+balancer = adaptive
+
+[srt]
+# SRT latency in milliseconds
+latency = 2000
+
+# Optional SRT stream ID
+# stream_id = mystreamkey
+
+[adaptive]
+# Bitrate increase step (Kbps)
+incr_step = 30
+
+# Bitrate decrease step (Kbps)
+decr_step = 100
+
+# Minimum interval between increases (ms)
+incr_interval = 500
+
+# Minimum interval between decreases (ms)
+decr_interval = 200
+
+# Packet loss threshold (packets per interval)
+loss_threshold = 0.5
+
+[aimd]
+# Additive increase step (Kbps)
+incr_step = 50
+
+# Multiplicative decrease factor (0.0-1.0)
+decr_mult = 0.75
+
+# Minimum interval between increases (ms)
+incr_interval = 500
+
+# Minimum interval between decreases (ms)
+decr_interval = 200

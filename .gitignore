@@ -1,2 +1,9 @@
+# Compiled binary
 belacoder
-belacoder.o
+
+# Object files
+*.o
+
+# Editor files
+*.swp
+*~
