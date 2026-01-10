@@ -16,23 +16,37 @@ The core value proposition is **adaptive bitrate control**: belacoder monitors S
 ```
 belacoder/
 ├── src/                      # Source code
-│   ├── belacoder.c           # Main application (GStreamer + SRT integration)
-│   ├── config.c/h            # INI config file parser
+│   ├── belacoder.c           # Main application (orchestrates modules)
 │   ├── balancer.h            # Balancer algorithm interface
-│   ├── balancer_adaptive.c   # Default adaptive algorithm (RTT/buffer-based)
-│   ├── balancer_fixed.c      # Fixed bitrate (no adaptation)
-│   ├── balancer_aimd.c       # AIMD algorithm (TCP-style)
-│   ├── balancer_registry.c   # Algorithm registration and lookup
-│   └── bitrate_control.c/h   # Adaptive algorithm internals (BitrateContext)
+│   ├── core/                 # Core logic modules
+│   │   ├── config.c/h        # INI config file parser
+│   │   ├── balancer_runner.c/h   # Balancer algorithm orchestration
+│   │   ├── balancer_adaptive.c   # Default adaptive algorithm
+│   │   ├── balancer_fixed.c      # Fixed bitrate algorithm
+│   │   ├── balancer_aimd.c       # AIMD algorithm (TCP-style)
+│   │   ├── balancer_registry.c   # Algorithm registration and lookup
+│   │   └── bitrate_control.c/h   # Adaptive algorithm internals
+│   ├── io/                   # Input/output modules
+│   │   ├── cli_options.c/h   # Command-line argument parsing
+│   │   └── pipeline_loader.c/h   # GStreamer pipeline file loading
+│   ├── net/                  # Network modules
+│   │   └── srt_client.c/h    # SRT connection management
+│   └── gst/                  # GStreamer helper modules
+│       ├── encoder_control.c/h   # Video encoder bitrate control
+│       └── overlay_ui.c/h        # On-screen stats overlay
+├── tests/                    # Integration tests (cmocka)
+│   ├── test_balancer.c       # Balancer algorithm tests
+│   ├── test_integration.c    # Module integration tests
+│   └── test_fakes.c/h        # Test stubs/fakes
 ├── camlink_workaround/       # Git submodule for Elgato Cam Link quirks
 ├── pipeline/                 # GStreamer pipeline templates by platform
 │   ├── generic/              # Software encoding (x264)
-│   ├── jetson/               # NVIDIA Jetson hardware encoding (nvv4l2h265enc)
+│   ├── jetson/               # NVIDIA Jetson hardware encoding
 │   ├── n100/                 # Intel N100 hardware encoding
 │   └── rk3588/               # Rockchip RK3588 hardware encoding
 ├── docs/                     # Documentation (you are here)
 ├── Makefile                  # Build system
-├── Dockerfile                # Container build (installs CERALIVE/srt fork)
+├── Dockerfile                # Container build
 ├── belacoder.conf.example    # Example configuration file
 └── README.md
 ```
@@ -41,13 +55,19 @@ belacoder/
 
 | Module | Files | Responsibility |
 |--------|-------|----------------|
-| Main | `belacoder.c` | GStreamer pipeline, SRT connection, CLI parsing, main loop |
-| Config | `config.c/h` | INI config file parsing, runtime reload via SIGHUP |
-| Balancer Interface | `balancer.h` | Algorithm interface (`BalancerAlgorithm` struct) |
-| Balancer Registry | `balancer_registry.c` | Algorithm lookup by name |
-| Adaptive Algorithm | `balancer_adaptive.c`, `bitrate_control.c/h` | RTT/buffer-based adaptive control (default) |
-| Fixed Algorithm | `balancer_fixed.c` | Constant bitrate, no adaptation |
-| AIMD Algorithm | `balancer_aimd.c` | TCP-style congestion control |
+| Main | `src/belacoder.c` | Application entry point, main loop, signal handling |
+| CLI Options | `src/io/cli_options.c/h` | Command-line argument parsing |
+| Config | `src/core/config.c/h` | INI config file parsing, runtime reload via SIGHUP |
+| Pipeline Loader | `src/io/pipeline_loader.c/h` | Load GStreamer pipeline from file |
+| SRT Client | `src/net/srt_client.c/h` | SRT connection management and data transmission |
+| Encoder Control | `src/gst/encoder_control.c/h` | Video encoder bitrate updates |
+| Overlay UI | `src/gst/overlay_ui.c/h` | On-screen stats overlay management |
+| Balancer Runner | `src/core/balancer_runner.c/h` | Balancer algorithm orchestration |
+| Balancer Interface | `src/balancer.h` | Algorithm interface (`BalancerAlgorithm` struct) |
+| Balancer Registry | `src/core/balancer_registry.c` | Algorithm lookup by name |
+| Adaptive Algorithm | `src/core/balancer_adaptive.c`, `src/core/bitrate_control.c/h` | RTT/buffer-based adaptive control (default) |
+| Fixed Algorithm | `src/core/balancer_fixed.c` | Constant bitrate, no adaptation |
+| AIMD Algorithm | `src/core/balancer_aimd.c` | TCP-style congestion control |
 | Camlink Workaround | `camlink_workaround/` | USB quirks for Elgato Cam Link |
 
 ## Runtime Dataflow
@@ -129,23 +149,56 @@ All resources are properly cleaned up on exit:
 
 | Component | Location | Responsibility |
 |-----------|----------|----------------|
-| CLI parser | `belacoder.c:main()` | Parse options, validate ranges |
-| Config loader | `config.c` | Parse INI config file, reload on SIGHUP |
-| Pipeline loader | `belacoder.c:main()` | Read pipeline file, call `gst_parse_launch` |
-| SRT sender | `belacoder.c:new_buf_cb()` | Chunk samples into SRT packets, call `srt_send` |
-| Balancer interface | `balancer.h:BalancerAlgorithm` | Pluggable algorithm interface (init/step/cleanup) |
-| Balancer registry | `balancer_registry.c` | Algorithm lookup by name, default selection |
-| Adaptive algorithm | `balancer_adaptive.c`, `bitrate_control.c` | RTT/buffer-based adaptive control |
-| AIMD algorithm | `balancer_aimd.c` | TCP-style congestion control |
-| Connection monitor | `belacoder.c:connection_housekeeping()` | ACK timeout detection, stats polling |
-| Stall detector | `belacoder.c:stall_check()` | Exit on pipeline stall, config reload |
+| CLI parser | `src/io/cli_options.c` | Parse options, validate ranges |
+| Config loader | `src/core/config.c` | Parse INI config file, reload on SIGHUP |
+| Pipeline loader | `src/io/pipeline_loader.c` | Read pipeline file, call `gst_parse_launch` |
+| SRT client | `src/net/srt_client.c` | Connect, send data, retrieve stats |
+| Encoder control | `src/gst/encoder_control.c` | Update encoder bitrate via GObject properties |
+| Overlay UI | `src/gst/overlay_ui.c` | Update on-screen stats display |
+| Balancer runner | `src/core/balancer_runner.c` | Initialize and run balancer algorithm |
+| Balancer interface | `src/balancer.h:BalancerAlgorithm` | Pluggable algorithm interface (init/step/cleanup) |
+| Balancer registry | `src/core/balancer_registry.c` | Algorithm lookup by name, default selection |
+| Adaptive algorithm | `src/core/balancer_adaptive.c`, `src/core/bitrate_control.c` | RTT/buffer-based adaptive control |
+| AIMD algorithm | `src/core/balancer_aimd.c` | TCP-style congestion control |
+| Connection monitor | `src/belacoder.c:connection_housekeeping()` | ACK timeout detection, stats polling |
+| Stall detector | `src/belacoder.c:stall_check()` | Exit on pipeline stall, config reload |
 
 ## GStreamer ↔ SRT Boundary
 
-- **GStreamer-dependent**: Pipeline parsing, element property access, buffer handling, clock queries.
-- **SRT-dependent**: Socket creation, options (latency, overhead, retransmit algo, stream ID), `srt_send`, stats polling.
+The codebase maintains clean separation between GStreamer and SRT concerns:
 
-The only direct coupling is the `appsink` callback pulling samples and forwarding them to `srt_send()`. This makes it feasible to swap the transport layer (e.g., RIST, WebRTC) without touching GStreamer code, or to swap the media engine without touching SRT code.
+- **GStreamer-dependent modules**: `pipeline_loader`, `encoder_control`, `overlay_ui`
+- **SRT-dependent modules**: `srt_client`
+- **Independent modules**: `cli_options`, `config`, `balancer_*`
+
+The `belacoder.c` main file orchestrates these modules but delegates specific responsibilities. The only direct coupling is the `appsink` callback pulling samples and forwarding them to SRT. This makes it feasible to swap the transport layer (e.g., RIST, WebRTC) without touching GStreamer code, or to swap the media engine without touching SRT code.
+
+## Testing
+
+The project includes integration tests that verify module interactions without requiring actual hardware or network connections:
+
+```bash
+make test
+```
+
+### Test Structure
+
+- **`tests/test_balancer.c`** - Tests all balancer algorithms (adaptive, fixed, AIMD) including:
+  - Bitrate increase on good network
+  - Bitrate decrease on congestion
+  - Packet loss handling
+  - Min/max bounds enforcement
+
+- **`tests/test_integration.c`** - Tests module integration including:
+  - Config loading and reload
+  - Balancer initialization from config
+  - CLI option overrides
+  - End-to-end balancer flow
+  - Rapid network condition changes
+
+- **`tests/test_fakes.{c,h}`** - Fake implementations of GStreamer and SRT for testing
+
+Tests use [cmocka](https://cmocka.org/) as the test framework.
 
 ## Pipeline Templates
 

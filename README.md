@@ -138,6 +138,26 @@ The Makefile uses `pkg-config` to locate GStreamer and libsrt. Ensure both are i
 pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 srt
 ```
 
+### Testing
+
+belacoder includes integration tests that verify module behavior without requiring actual hardware:
+
+```bash
+# Install cmocka (test framework)
+sudo apt-get install libcmocka-dev
+
+# Run all tests
+make test
+```
+
+Tests verify:
+- Balancer algorithm behavior (adaptive, fixed, AIMD)
+- Config loading and reload
+- Bitrate bounds enforcement
+- Network condition responses
+
+See [docs/architecture.md](docs/architecture.md) for details on the modular architecture and testing approach.
+
 
 Usage
 -----
@@ -147,31 +167,54 @@ Syntax: belacoder PIPELINE_FILE ADDR PORT [options]
 
 Options:
   -v                  Print the version and exit
+  -c <config file>    Configuration file (INI format, recommended)
   -d <delay>          Audio-video delay in milliseconds
   -s <streamid>       SRT stream ID
   -l <latency>        SRT latency in milliseconds (default: 2000)
   -r                  Reduced SRT packet size (6 TS packets instead of 7)
-  -b <bitrate file>   Bitrate settings file, see below
+  -b <bitrate file>   Bitrate settings file (legacy, use -c instead)
+  -a <algorithm>      Bitrate balancer algorithm (overrides config)
 
-Bitrate settings file syntax:
-MIN BITRATE (bps)
-MAX BITRATE (bps)
+Config file example (belacoder.conf):
+[general]
+min_bitrate = 500    # Kbps
+max_bitrate = 6000   # Kbps (6 Mbps)
+balancer = adaptive  # Algorithm: adaptive, fixed, aimd
+
+[srt]
+latency = 2000       # ms
+
+[adaptive]
+incr_step = 30       # Bitrate increase step (Kbps)
+decr_step = 100      # Bitrate decrease step (Kbps)
+incr_interval = 500  # Min interval between increases (ms)
+decr_interval = 200  # Min interval between decreases (ms)
+
 ---
-Example for 500 Kbps – 6000 Kbps:
-
-    printf "500000\n6000000" > bitrate_file
-
----
-Send SIGHUP to reload the bitrate settings while running.
+Send SIGHUP to reload configuration while running:
+    kill -HUP $(pidof belacoder)
 ```
 
 Where:
 
 * `PIPELINE_FILE` is a text file containing the GStreamer pipeline to use. See the `pipeline` directory for ready-made pipelines.
-* `ADDR` is the hostname or IP address of the SRT listener to stream to (only applicable when the GStreamer sink is `appsink name=appsink`).
-* `PORT` is the port of the SRT listener to stream to (only applicable when the GStreamer sink is `appsink name=appsink`).
-* `-d <delay>` is the optional delay in milliseconds to add to the audio stream relative to the video (when using the GStreamer pipelines supplied with belacoder).
-* `-b <bitrate file>` is an optional argument for setting the minimum and maximum **video** bitrate (when using the GStreamer pipelines supplied with belacoder). These settings are reloaded from the file and applied when a SIGHUP signal is received.
+* `ADDR` is the hostname or IP address of the SRT listener to stream to.
+* `PORT` is the port of the SRT listener to stream to.
+* `-c <config file>` is the recommended way to configure bitrate bounds and algorithm settings. See `belacoder.conf.example` for a full example.
+* `-d <delay>` is the optional delay in milliseconds to add to the audio stream relative to the video.
+* `-b <bitrate file>` is the legacy way to set bitrate bounds (use `-c` instead for new deployments).
+
+### Balancer Algorithms
+
+belacoder supports multiple bitrate control algorithms:
+
+| Algorithm | Description | Best For |
+|-----------|-------------|----------|
+| **adaptive** (default) | RTT and buffer-based control with graduated response | Most use cases, variable networks |
+| **fixed** | Constant bitrate, no adaptation | Stable networks, testing |
+| **aimd** | TCP-style Additive Increase Multiplicative Decrease | Fair bandwidth sharing |
+
+Select via config file or override with `-a <algorithm>`.
 
 
 GStreamer Pipelines

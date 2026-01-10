@@ -1,6 +1,10 @@
 # Compiled binary
 belacoder
 
+# Test binaries
+tests/test_balancer
+tests/test_integration
+
 # Object files
 *.o
 

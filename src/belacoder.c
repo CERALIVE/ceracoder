@@ -18,12 +18,11 @@
 */
 
 #include <stdio.h>
-#include <assert.h>
-#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 #include <time.h>
-#include <sys/mman.h>
-#include <arpa/inet.h>
+#include <errno.h>
 
 #include <gst/gst.h>
 #include <gst/gstinfo.h>
@@ -33,30 +32,22 @@
 #include <srt.h>
 #include <srt/access_control.h>
 
-#include "bitrate_control.h"
-#include "balancer.h"
+#include "cli_options.h"
 #include "config.h"
+#include "srt_client.h"
+#include "pipeline_loader.h"
+#include "encoder_control.h"
+#include "overlay_ui.h"
+#include "balancer_runner.h"
+#include "bitrate_control.h"
 
-// Ensure SRT version is at least 1.4.0 (required for SRTO_RETRANSMITALGO)
-#ifndef SRT_VERSION_VALUE
-#define SRT_VERSION_VALUE SRT_MAKE_VERSION_VALUE(SRT_VERSION_MAJOR, SRT_VERSION_MINOR, SRT_VERSION_PATCH)
-#endif
-#if SRT_VERSION_VALUE < SRT_MAKE_VERSION_VALUE(1, 4, 0)
-#error "SRT 1.4.0 or later required (for SRTO_RETRANSMITALGO)"
-#endif
-
-// SRT configuration
-#define SRT_MAX_OHEAD 20     // maximum SRT transmission overhead (when using appsink)
+// SRT ACK timeout
 #define SRT_ACK_TIMEOUT 6000 // maximum interval between received ACKs before the connection is TOed
 
-// Settings ranges
+// Packet size constants
 #define TS_PKT_SIZE 188
 #define REDUCED_SRT_PKT_SIZE ((TS_PKT_SIZE)*6)
 #define DEFAULT_SRT_PKT_SIZE ((TS_PKT_SIZE)*7)
-#define MAX_AV_DELAY 10000
-#define MIN_SRT_LATENCY 100
-#define MAX_SRT_LATENCY 10000
-#define DEF_SRT_LATENCY 2000
 
 // Use GLib's MIN/MAX which are type-safe and don't double-evaluate
 #define min(a, b) MIN((a), (b))
@@ -70,75 +61,66 @@
   #define debug(...)
 #endif
 
+// Global state
 static GstPipeline *gst_pipeline = NULL;
-GMainLoop *loop;
-GstElement *encoder, *overlay;
-SRTSOCKET sock = -1;
-int quit = 0;
+static GMainLoop *loop;
+static SrtClient srt_client;
+static EncoderControl encoder_ctrl;
+static OverlayUi overlay_ui;
+static BalancerRunner balancer_runner;
+static int quit = 0;
+static int av_delay = 0;
+static int srt_pkt_size = DEFAULT_SRT_PKT_SIZE;
+
+// Configuration
+static BelacoderConfig g_config;
+static char *bitrate_filename = NULL;
+static char *config_filename = NULL;
 
 // Signal flag for async-signal-safe SIGHUP handling
 volatile sig_atomic_t reload_config_flag = 0;
 
-int enc_bitrate_div = 1;
-
-int av_delay = 0;
-
-// Balancer algorithm and state
-const BalancerAlgorithm *balancer_algo = NULL;
-void *balancer_state = NULL;
-BalancerConfig balancer_config;
-int min_bitrate = MIN_BITRATE;  // Keep for read_bitrate_file compatibility
-int max_bitrate = DEF_BITRATE;  // Keep for read_bitrate_file compatibility
-
-char *bitrate_filename = NULL;
-char *config_filename = NULL;  // CLI option for -c
-char *balancer_name = NULL;    // CLI option for -a (can override config)
-
-// Global configuration
-BelacoderConfig g_config;
-
-int srt_latency = DEF_SRT_LATENCY;
-int srt_pkt_size = DEFAULT_SRT_PKT_SIZE;
-
 uint64_t getms() {
   struct timespec ts = {0, 0};
   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-    // Should never happen, but handle gracefully
     return 0;
   }
   return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
 // Parse a string to long with full error checking
-// Returns 0 on success, -1 on parse error or out of range
-int parse_long(const char *str, long *result, long min_val, long max_val) {
+static int parse_long(const char *str, long *result, long min_val, long max_val) {
   if (str == NULL || *str == '\0') {
     return -1;
   }
   char *endptr;
+  int saved_errno = errno;
   errno = 0;
   long val = strtol(str, &endptr, 10);
-  // Check for conversion errors
   if (errno != 0 || endptr == str) {
+    errno = saved_errno;
     return -1;
   }
-  // Allow trailing whitespace/newline but not other garbage
   while (*endptr == ' ' || *endptr == '\t' || *endptr == '\n' || *endptr == '\r') {
     endptr++;
   }
   if (*endptr != '\0') {
+    errno = saved_errno;
     return -1;
   }
-  // Range check
   if (val < min_val || val > max_val) {
+    errno = saved_errno;
     return -1;
   }
   *result = val;
+  errno = saved_errno;
   return 0;
 }
 
-/* Attempts to stop the gstreamer pipeline cleanly
-   Also sets up an alarm in case it doesn't */
+// Forward declaration
+int read_bitrate_file(void);
+
+/* Attempts to stop the gstreamer pipeline cleanly */
 void stop() {
   if (!quit) {
     quit = 1;
@@ -147,10 +129,7 @@ void stop() {
   }
 }
 
-// Forward declarations
-int read_bitrate_file(void);
-
-// Async-signal-safe handler for SIGHUP - just sets a flag
+// Async-signal-safe handler for SIGHUP
 void sighup_handler(int sig) {
   (void)sig;
   reload_config_flag = 1;
@@ -177,9 +156,10 @@ gboolean stall_check(gpointer data) {
     return TRUE;
   }
 
-  // Check for SIGHUP-triggered config reload (async-signal-safe approach)
+  // Check for SIGHUP-triggered config reload
   if (reload_config_flag) {
     reload_config_flag = 0;
+    int min_bitrate, max_bitrate;
     int reloaded = 0;
 
     // Reload config file if specified
@@ -187,9 +167,7 @@ gboolean stall_check(gpointer data) {
       if (config_load(&g_config, config_filename) == 0) {
         min_bitrate = config_bitrate_bps(g_config.min_bitrate);
         max_bitrate = config_bitrate_bps(g_config.max_bitrate);
-        // Update balancer config
-        balancer_config.min_bitrate = min_bitrate;
-        balancer_config.max_bitrate = max_bitrate;
+        balancer_runner_update_bounds(&balancer_runner, min_bitrate, max_bitrate);
         fprintf(stderr, "Config reloaded: %d - %d Kbps\n",
                 min_bitrate / 1000, max_bitrate / 1000);
         reloaded = 1;
@@ -201,8 +179,6 @@ gboolean stall_check(gpointer data) {
     // Also reload legacy bitrate file if specified
     if (bitrate_filename && !reloaded) {
       read_bitrate_file();
-      balancer_config.min_bitrate = min_bitrate;
-      balancer_config.max_bitrate = max_bitrate;
     }
   }
 
@@ -218,19 +194,6 @@ gboolean stall_check(gpointer data) {
 
   prev_pos = pos;
   return TRUE;
-}
-
-void update_overlay(int set_bitrate, double throughput,
-                    int rtt, int rtt_th_min, int rtt_th_max,
-                    int bs, int bs_th1, int bs_th2, int bs_th3) {
-  if (GST_IS_ELEMENT(overlay)) {
-    char overlay_text[100];
-    snprintf(overlay_text, 100, "  b: %5d/%5.0f rtt: %3d/%3d/%3d bs: %3d/%3d/%3d/%3d",
-             set_bitrate/1000, throughput,
-             rtt, rtt_th_min, rtt_th_max,
-             bs, bs_th1, bs_th2, bs_th3);
-    g_object_set (G_OBJECT(overlay), "text", overlay_text, NULL);
-  }
 }
 
 int parse_bitrate(const char *bitrate_string) {
@@ -250,24 +213,16 @@ int read_bitrate_file() {
   int br[2];
 
   for (int i = 0; i < 2; i++) {
-    buf_sz = getline(&buf, &buf_sz, f);
-    if (buf_sz < 0) goto ret_err;
+    ssize_t len = getline(&buf, &buf_sz, f);
+    if (len < 0) goto ret_err;
     br[i] = parse_bitrate(buf);
     if (br[i] < 0) goto ret_err;
   }
 
   free(buf);
   fclose(f);
-  min_bitrate = br[0];
-  max_bitrate = br[1];
-  // Update balancer config and reinitialize if needed
-  balancer_config.min_bitrate = min_bitrate;
-  balancer_config.max_bitrate = max_bitrate;
-  if (balancer_algo != NULL && balancer_state != NULL) {
-    // Reinitialize algorithm with new config (loses accumulated state)
-    balancer_algo->cleanup(balancer_state);
-    balancer_state = balancer_algo->init(&balancer_config);
-  }
+  
+  balancer_runner_update_bounds(&balancer_runner, br[0], br[1]);
   return 0;
 
 ret_err:
@@ -280,7 +235,7 @@ void do_bitrate_update(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   // Get send buffer size from SRT
   int bs = -1;
   int sz = sizeof(bs);
-  int ret = srt_getsockflag(sock, SRTO_SNDDATA, &bs, &sz);
+  int ret = srt_client_get_sockopt(&srt_client, SRTO_SNDDATA, &bs, &sz);
   if (ret != 0 || bs < 0) return;
 
   // Prepare input for balancer
@@ -294,20 +249,15 @@ void do_bitrate_update(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   };
 
   // Call the balancer algorithm
-  static int prev_set_bitrate = 0;
-  BalancerOutput output = balancer_algo->step(balancer_state, &input);
+  BalancerOutput output = balancer_runner_step(&balancer_runner, &input);
 
   // Update the overlay display
-  update_overlay(output.new_bitrate, output.throughput,
-                 output.rtt, output.rtt_th_min, output.rtt_th_max,
-                 output.bs, output.bs_th1, output.bs_th2, output.bs_th3);
+  overlay_ui_update(&overlay_ui, output.new_bitrate, output.throughput,
+                    output.rtt, output.rtt_th_min, output.rtt_th_max,
+                    output.bs, output.bs_th1, output.bs_th2, output.bs_th3);
 
-  // Set encoder bitrate if changed
-  if (output.new_bitrate != prev_set_bitrate) {
-    prev_set_bitrate = output.new_bitrate;
-    g_object_set(G_OBJECT(encoder), "bps", output.new_bitrate / enc_bitrate_div, NULL);
-    debug("set bitrate to %d\n", output.new_bitrate);
-  }
+  // Set encoder bitrate
+  encoder_control_set_bitrate(&encoder_ctrl, output.new_bitrate);
 }
 
 gboolean connection_housekeeping(gpointer user_data) {
@@ -318,7 +268,7 @@ gboolean connection_housekeeping(gpointer user_data) {
 
   // SRT stats
   SRT_TRACEBSTATS stats;
-  int ret = srt_bstats(sock, &stats, 1);
+  int ret = srt_client_get_stats(&srt_client, &stats);
   if (ret != 0) goto r;
 
   // Track when the most recent ACK was received
@@ -326,15 +276,14 @@ gboolean connection_housekeeping(gpointer user_data) {
     prev_ack_count = stats.pktRecvACKTotal;
     prev_ack_ts = ctime;
   }
-  /* Manual check for connection timeout, because SRT is Pepega
-     and will fail to timeout if RTT was high */
+  /* Manual check for connection timeout */
   if (prev_ack_count != 0 && (ctime - prev_ack_ts) > SRT_ACK_TIMEOUT) {
     fprintf(stderr, "The SRT connection timed out, exiting\n");
     stop();
   }
 
-  // We can only update the bitrate when we have a configurable encoder
-  if (GST_IS_ELEMENT(encoder)) {
+  // Update bitrate when we have a configurable encoder
+  if (encoder_control_available(&encoder_ctrl)) {
     do_bitrate_update(&stats, ctime);
   }
 
@@ -356,15 +305,15 @@ GstFlowReturn new_buf_cb(GstAppSink *sink, gpointer user_data) {
   buffer = gst_sample_get_buffer(sample);
   gst_buffer_map(buffer, &map, GST_MAP_READ);
 
-  // We send srt_pkt_size size packets, splitting and merging samples if needed
+  // Send srt_pkt_size packets, splitting and merging samples if needed
   int sample_sz = map.size;
   do {
-    int copy_sz = min(srt_pkt_size - pkt_len, sample_sz);
+    int copy_sz = MIN(srt_pkt_size - pkt_len, sample_sz);
     memcpy((void *)pkt + pkt_len, map.data, copy_sz);
     pkt_len += copy_sz;
 
     if (pkt_len == srt_pkt_size) {
-      int nb = srt_send(sock, pkt, srt_pkt_size);
+      int nb = srt_client_send(&srt_client, pkt, srt_pkt_size);
       if (nb != srt_pkt_size) {
         if (!quit) {
           fprintf(stderr, "The SRT connection failed, exiting\n");
@@ -384,117 +333,6 @@ ret:
   gst_sample_unref(sample);
 
   return code;
-}
-
-int parse_ip(struct sockaddr_in *addr, char *ip_str) {
-  in_addr_t ip = inet_addr(ip_str);
-  if (ip == -1) return -1;
-
-  memset(addr, 0, sizeof(*addr));
-  addr->sin_family = AF_INET; 
-  addr->sin_addr.s_addr = ip;
-
-  return 0;
-}
-
-int parse_ip_port(struct sockaddr_in *addr, char *ip_str, char *port_str) {
-  if (parse_ip(addr, ip_str) != 0) return -1;
-
-  long port;
-  if (parse_long(port_str, &port, 1, 65535) != 0) return -2;
-  addr->sin_port = htons((uint16_t)port);
-
-  return 0;
-}
-
-int connect_srt(char *host, char *port, char *stream_id) {
-  struct addrinfo hints;
-  struct addrinfo *addrs;
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_DGRAM;
-  int ret = getaddrinfo(host, port, &hints, &addrs);
-  if (ret != 0) return -1;
-
-  sock = srt_create_socket();
-  if (sock == SRT_INVALID_SOCK) return -2;
-
-#if SRT_MAX_OHEAD > 0
-  // auto, based on input rate
-  int64_t max_bw = 0;
-  if (srt_setsockflag(sock, SRTO_MAXBW, &max_bw, sizeof(max_bw)) != 0) {
-    fprintf(stderr, "Failed to set SRTO_MAXBW: %s\n", srt_getlasterror_str());
-    return -4;
-  }
-
-  // overhead(retransmissions)
-  int32_t ohead = SRT_MAX_OHEAD;
-  if (srt_setsockflag(sock, SRTO_OHEADBW, &ohead, sizeof(ohead)) != 0) {
-    fprintf(stderr, "Failed to set SRTO_OHEADBW: %s\n", srt_getlasterror_str());
-    return -4;
-  }
-#endif
-
-  if (srt_setsockflag(sock, SRTO_LATENCY, &srt_latency, sizeof(srt_latency)) != 0) {
-    fprintf(stderr, "Failed to set SRTO_LATENCY: %s\n", srt_getlasterror_str());
-    return -4;
-  }
-
-  if (stream_id != NULL) {
-    if (srt_setsockflag(sock, SRTO_STREAMID, stream_id, strlen(stream_id)) != 0) {
-      fprintf(stderr, "Failed to set SRTO_STREAMID: %s\n", srt_getlasterror_str());
-      return -4;
-    }
-  }
-
-  int32_t algo = 1;
-  if (srt_setsockflag(sock, SRTO_RETRANSMITALGO, &algo, sizeof(algo)) != 0) {
-    fprintf(stderr, "Failed to set SRTO_RETRANSMITALGO: %s\n", srt_getlasterror_str());
-    return -4;
-  }
-
-  int connected = -3;
-  for (struct addrinfo *addr = addrs; addr != NULL; addr = addr->ai_next) {
-    ret = srt_connect(sock, addr->ai_addr, addr->ai_addrlen);
-    if (ret == 0) {
-      connected = 0;
-
-      int len = sizeof(srt_latency);
-      if (srt_getsockflag(sock, SRTO_PEERLATENCY, &srt_latency, &len) != 0) {
-        fprintf(stderr, "Warning: Failed to get SRTO_PEERLATENCY: %s\n", srt_getlasterror_str());
-      }
-      fprintf(stderr, "SRT connected to %s:%s. Negotiated latency: %d ms\n",
-              host, port, srt_latency);
-      break;
-    }
-    connected = srt_getrejectreason(sock);
-  }
-  freeaddrinfo(addrs);
-
-  return connected;
-}
-
-void exit_syntax() {
-  fprintf(stderr, "Syntax: belacoder PIPELINE_FILE ADDR PORT [options]\n\n");
-  fprintf(stderr, "Options:\n");
-  fprintf(stderr, "  -v                  Print the version and exit\n");
-  fprintf(stderr, "  -c <config file>    Configuration file (INI format)\n");
-  fprintf(stderr, "  -d <delay>          Audio-video delay in milliseconds\n");
-  fprintf(stderr, "  -s <streamid>       SRT stream ID\n");
-  fprintf(stderr, "  -l <latency>        SRT latency in milliseconds\n");
-  fprintf(stderr, "  -r                  Reduced SRT packet size\n");
-  fprintf(stderr, "  -b <bitrate file>   Bitrate settings file (legacy, use -c instead)\n");
-  fprintf(stderr, "  -a <algorithm>      Bitrate balancer algorithm (overrides config)\n\n");
-  fprintf(stderr, "Config file example:\n");
-  fprintf(stderr, "  [general]\n");
-  fprintf(stderr, "  min_bitrate = 500    # Kbps\n");
-  fprintf(stderr, "  max_bitrate = 6000   # Kbps (6 Mbps)\n");
-  fprintf(stderr, "  balancer = adaptive\n\n");
-  fprintf(stderr, "  [srt]\n");
-  fprintf(stderr, "  latency = 2000       # ms\n\n");
-  fprintf(stderr, "Send SIGHUP to reload configuration while running.\n\n");
-  balancer_print_available();
-  exit(EXIT_FAILURE);
 }
 
 static void cb_delay (GstElement *identity, GstBuffer *buffer, gpointer data) {
@@ -602,90 +440,34 @@ void cb_sigalarm(int signum) {
 
 #define FIXED_ARGS 3
 int main(int argc, char** argv) {
-  int opt;
-  char *srt_host = NULL;
-  char *srt_port = NULL;
-  char *stream_id = NULL;
-  srt_latency = DEF_SRT_LATENCY;
+  CliOptions opts;
+  PipelineFile pfile;
+  
+  // Parse command-line options
+  cli_options_parse(&opts, argc, argv);
 
-  while ((opt = getopt(argc, argv, "a:c:d:b:s:l:rv")) != -1) {
-    switch (opt) {
-      case 'a':
-        balancer_name = optarg;
-        break;
-      case 'b':
-        bitrate_filename = optarg;
-        break;
-      case 'c':
-        config_filename = optarg;
-        break;
-      case 'd': {
-        long delay;
-        if (parse_long(optarg, &delay, -MAX_AV_DELAY, MAX_AV_DELAY) != 0) {
-          fprintf(stderr, "Invalid delay value. Maximum sound delay +/- %d\n\n", MAX_AV_DELAY);
-          exit_syntax();
-        }
-        av_delay = (int)delay;
-        break;
-      }
-      case 's':
-        stream_id = optarg;
-        break;
-      case 'l': {
-        long latency;
-        if (parse_long(optarg, &latency, MIN_SRT_LATENCY, MAX_SRT_LATENCY) != 0) {
-          fprintf(stderr, "Invalid latency value. Must be between %d and %d ms\n\n",
-                  MIN_SRT_LATENCY, MAX_SRT_LATENCY);
-          exit_syntax();
-        }
-        srt_latency = (int)latency;
-        break;
-      }
-      case 'r':
-        srt_pkt_size = REDUCED_SRT_PKT_SIZE;
-        break;
-      case 'v':
-        printf(VERSION "\n");
-        exit(EXIT_SUCCESS);
-      default:
-        exit_syntax();
-    }
-  }
+  // Set global state from options
+  av_delay = opts.av_delay;
+  srt_pkt_size = opts.reduced_pkt_size ? REDUCED_SRT_PKT_SIZE : DEFAULT_SRT_PKT_SIZE;
+  config_filename = opts.config_file;
+  bitrate_filename = opts.bitrate_file;
 
-  if (argc - optind != FIXED_ARGS) {
-    exit_syntax();
-  }
-
-
-  // Read the pipeline file
-  int pipeline_fd = open(argv[optind], O_RDONLY);
-  if (pipeline_fd < 0) {
-    fprintf(stderr, "Failed to open the pipeline file %s: ", argv[optind]);
-    perror("");
+  // Load pipeline file
+  if (pipeline_file_load(&pfile, opts.pipeline_file) != 0) {
     exit(EXIT_FAILURE);
   }
-  size_t launch_string_len = lseek(pipeline_fd, 0, SEEK_END);
-  if (launch_string_len == 0) {
-    fprintf(stderr, "The pipeline file is empty, exiting\n");
-    close(pipeline_fd);
-    exit(EXIT_FAILURE);
-  }
-  char *launch_string = mmap(0, launch_string_len, PROT_READ, MAP_PRIVATE, pipeline_fd, 0);
-  close(pipeline_fd);  // mmap keeps its own reference, fd no longer needed
-  fprintf(stderr, "Gstreamer pipeline: %s\n", launch_string);
 
-  gst_init (&argc, &argv);
-  GError *error = NULL;
-  gst_pipeline  = (GstPipeline*) gst_parse_launch(launch_string, &error);
+  // Initialize GStreamer and create pipeline
+  gst_init(&argc, &argv);
+  gst_pipeline = pipeline_create(&pfile);
   if (gst_pipeline == NULL) {
-    fprintf(stderr, "Failed to parse launch: %s\n", error->message);
+    pipeline_file_unload(&pfile);
     return -1;
   }
-  if (error) g_error_free(error);
+
   GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(gst_pipeline));
   gst_bus_add_signal_watch(bus);
   g_signal_connect(bus, "message", (GCallback)cb_pipeline, gst_pipeline);
-
 
   // Initialize configuration with defaults
   config_init_defaults(&g_config);
@@ -697,90 +479,48 @@ int main(int argc, char** argv) {
       exit(EXIT_FAILURE);
     }
     fprintf(stderr, "Loaded config from %s\n", config_filename);
-    // Apply config to globals (Kbps -> bps conversion)
-    min_bitrate = config_bitrate_bps(g_config.min_bitrate);
-    max_bitrate = config_bitrate_bps(g_config.max_bitrate);
-    if (g_config.srt_latency > 0) {
-      srt_latency = g_config.srt_latency;
-    }
   }
 
   // Legacy bitrate file support (overrides config if both specified)
   if (bitrate_filename) {
-    int ret;
-    if ((ret = read_bitrate_file()) != 0) {
+    int ret = read_bitrate_file();
+    if (ret != 0) {
       if (ret == -1) {
         fprintf(stderr, "Failed to read the bitrate settings file %s\n", bitrate_filename);
       } else {
         fprintf(stderr, "Failed to read valid bitrate settings from %s\n", bitrate_filename);
       }
-      exit_syntax();
-    }
-  }
-
-  // Select balancer algorithm (CLI -a overrides config)
-  const char *algo_name = balancer_name ? balancer_name : g_config.balancer;
-  balancer_algo = balancer_find(algo_name);
-  if (balancer_algo == NULL) {
-    // Try default if config had invalid name
-    if (balancer_name != NULL) {
-      fprintf(stderr, "Unknown balancer algorithm: %s\n\n", balancer_name);
-      balancer_print_available();
+      cli_options_print_usage();
       exit(EXIT_FAILURE);
     }
-    balancer_algo = balancer_get_default();
   }
-  fprintf(stderr, "Balancer: %s\n", balancer_algo->name);
 
-  // Initialize the balancer
-  balancer_config.min_bitrate = min_bitrate;
-  balancer_config.max_bitrate = max_bitrate;
-  balancer_config.srt_latency = srt_latency;
-  balancer_config.srt_pkt_size = srt_pkt_size;
+  // Determine SRT latency (CLI -l takes precedence over config)
+  int srt_latency = (opts.srt_latency != 2000) ? opts.srt_latency : 
+                    (g_config.srt_latency > 0 ? g_config.srt_latency : 2000);
 
-  // Adaptive algorithm tuning (config uses Kbps, convert to bps)
-  balancer_config.adaptive_incr_step = config_bitrate_bps(g_config.adaptive.incr_step);
-  balancer_config.adaptive_decr_step = config_bitrate_bps(g_config.adaptive.decr_step);
-  balancer_config.adaptive_incr_interval = g_config.adaptive.incr_interval;
-  balancer_config.adaptive_decr_interval = g_config.adaptive.decr_interval;
-
-  // AIMD algorithm tuning
-  balancer_config.aimd_incr_step = config_bitrate_bps(g_config.aimd.incr_step);
-  balancer_config.aimd_decr_mult = g_config.aimd.decr_mult;
-  balancer_config.aimd_incr_interval = g_config.aimd.incr_interval;
-  balancer_config.aimd_decr_interval = g_config.aimd.decr_interval;
-
-  balancer_state = balancer_algo->init(&balancer_config);
-  if (balancer_state == NULL) {
-    fprintf(stderr, "Failed to initialize balancer algorithm\n");
+  // Initialize balancer
+  if (balancer_runner_init(&balancer_runner, &g_config, opts.balancer_name, 
+                           srt_latency, srt_pkt_size) != 0) {
     exit(EXIT_FAILURE);
   }
-  fprintf(stderr, "Bitrate range: %d - %d Kbps\n", min_bitrate / 1000, max_bitrate / 1000);
   signal(SIGHUP, sighup_handler);
 
-  encoder = gst_bin_get_by_name(GST_BIN(gst_pipeline), "venc_bps");
-  if (!GST_IS_ELEMENT(encoder)) {
-    encoder = gst_bin_get_by_name(GST_BIN(gst_pipeline), "venc_kbps");
-    enc_bitrate_div = 1000;
-  }
-  if (GST_IS_ELEMENT(encoder)) {
-    // Start at max bitrate (all algorithms should start optimistically)
-    g_object_set(G_OBJECT(encoder), "bps", max_bitrate / enc_bitrate_div, NULL);
-  } else {
-    fprintf(stderr, "Failed to get an encoder element from the pipeline, "
-                    "no dynamic bitrate control\n");
-    encoder = NULL;
+  // Initialize encoder control
+  encoder_control_init(&encoder_ctrl, gst_pipeline);
+  if (encoder_control_available(&encoder_ctrl)) {
+    // Start at max bitrate
+    encoder_control_set_bitrate(&encoder_ctrl, config_bitrate_bps(g_config.max_bitrate));
   }
 
+  // Initialize overlay
+  overlay_ui_init(&overlay_ui, gst_pipeline);
+  overlay_ui_update(&overlay_ui, 0,0,0,0,0,0,0,0,0);
 
-  // Optional bitrate overlay
-  overlay = gst_bin_get_by_name(GST_BIN(gst_pipeline), "overlay");
-  update_overlay(0,0,0,0,0,0,0,0,0);
-
-
-  // Optional sound delay via an identity element
+  // Optional sound delay via identity element
   fprintf(stderr, "A-V delay: %d ms\n", av_delay);
-  GstElement *identity_elem = gst_bin_get_by_name(GST_BIN(gst_pipeline), av_delay >= 0 ? "a_delay" : "v_delay");
+  GstElement *identity_elem = gst_bin_get_by_name(GST_BIN(gst_pipeline), 
+                                                   av_delay >= 0 ? "a_delay" : "v_delay");
   if (GST_IS_ELEMENT(identity_elem)) {
     g_object_set(G_OBJECT(identity_elem), "signal-handoffs", TRUE, NULL);
     g_signal_connect(identity_elem, "handoff", G_CALLBACK(cb_delay), NULL);
@@ -788,9 +528,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Failed to get a delay element from the pipeline, not applying a delay\n");
   }
 
-
   // Optional video PTS interval fixup
-  // To avoid OBS dropping frames due to PTS jitter
   identity_elem = gst_bin_get_by_name(GST_BIN(gst_pipeline), "ptsfixup");
   if (GST_IS_ELEMENT(identity_elem)) {
     g_object_set(G_OBJECT(identity_elem), "signal-handoffs", TRUE, NULL);
@@ -800,22 +538,19 @@ int main(int argc, char** argv) {
                     "not removing PTS jitter\n");
   }
 
-
-  // Optional SRT streaming via an appsink (needed for dynamic video bitrate)
+  // Setup SRT streaming via appsink
   GstAppSinkCallbacks callbacks = {NULL, NULL, new_buf_cb};
   GstElement *srt_app_sink = gst_bin_get_by_name(GST_BIN(gst_pipeline), "appsink");
   if (GST_IS_ELEMENT(srt_app_sink)) {
-    gst_app_sink_set_callbacks (GST_APP_SINK(srt_app_sink), &callbacks, NULL, NULL);
-    srt_host = argv[optind+1];
-    srt_port = argv[optind+2];
-
-    srt_startup();
-  }
-
-  if (GST_IS_ELEMENT(srt_app_sink)) {
+    gst_app_sink_set_callbacks(GST_APP_SINK(srt_app_sink), &callbacks, NULL, NULL);
+    
+    // Initialize SRT and connect
+    srt_client_init();
+    
     int ret_srt;
     do {
-      ret_srt = connect_srt(srt_host, srt_port, stream_id);
+      ret_srt = srt_client_connect(&srt_client, opts.srt_host, opts.srt_port,
+                                    opts.stream_id, srt_latency, srt_pkt_size);
       if (ret_srt != 0) {
         char *reason = NULL;
         switch (ret_srt) {
@@ -848,50 +583,28 @@ int main(int argc, char** argv) {
     } while(ret_srt != 0);
   }
 
-  // We can only monitor the connection when we use an appsink
+  // Monitor connection when using appsink
   if (GST_IS_ELEMENT(srt_app_sink)) {
     g_timeout_add(BITRATE_UPDATE_INT, connection_housekeeping, NULL);
   }
 
-  /*
-    We used to attempt to restart the pipeline in case of errors
-    However the version of flvdemux distributed with Ubuntu 18.04
-    for the Jetson Nano fails to restart.
-    Rather than deal with glitchy pipeline elements, just give up
-    and exit. Ensure you run belacoder in a wrapper script which
-    can restart it if needed, e.g. belaUI
-  */
-  loop = g_main_loop_new (NULL, FALSE);
+  // Setup main loop
+  loop = g_main_loop_new(NULL, FALSE);
   g_unix_signal_add(SIGTERM, stop_from_signal, NULL);
   g_unix_signal_add(SIGINT, stop_from_signal, NULL);
   signal(SIGALRM, cb_sigalarm);
-  g_timeout_add(1000, stall_check, NULL); // check every second
+  g_timeout_add(1000, stall_check, NULL);
 
-  // Everything good so far, start the gstreamer pipeline
+  // Start pipeline
   gst_element_set_state((GstElement*)gst_pipeline, GST_STATE_PLAYING);
   g_main_loop_run(loop);
 
-  /*
-    Close the SRT socket, if connected
-    This must be done before trying to stop the pipeline, as the latter
-    may block, causing cb_sigalarm to terminate the process
-  */
-  if (sock >= 0) {
-    srt_close(sock);
-  }
-
+  // Cleanup
+  srt_client_close(&srt_client);
   gst_element_set_state((GstElement*)gst_pipeline, GST_STATE_NULL);
-
-  // Clean up SRT library resources
-  srt_cleanup();
-
-  // Clean up balancer
-  if (balancer_algo != NULL && balancer_state != NULL) {
-    balancer_algo->cleanup(balancer_state);
-  }
-
-  // Clean up mmap'd pipeline file
-  munmap(launch_string, launch_string_len);
+  srt_client_cleanup();
+  balancer_runner_cleanup(&balancer_runner);
+  pipeline_file_unload(&pfile);
 
   return 0;
 }
