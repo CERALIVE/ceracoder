@@ -8,7 +8,7 @@ submodule:
 	git submodule init
 	git submodule update
 
-OBJS = belacoder.o bitrate_control.o balancer_adaptive.o balancer_registry.o camlink_workaround/camlink.o
+OBJS = belacoder.o bitrate_control.o balancer_adaptive.o balancer_fixed.o balancer_aimd.o balancer_registry.o camlink_workaround/camlink.o
 
 belacoder: $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)

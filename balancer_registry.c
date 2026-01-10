@@ -29,6 +29,8 @@
  * External algorithm definitions
  */
 extern const BalancerAlgorithm balancer_adaptive;
+extern const BalancerAlgorithm balancer_fixed;
+extern const BalancerAlgorithm balancer_aimd;
 
 /*
  * Registry of all available algorithms
@@ -36,7 +38,8 @@ extern const BalancerAlgorithm balancer_adaptive;
  */
 static const BalancerAlgorithm* const algorithms[] = {
     &balancer_adaptive,
-    // Add new algorithms here
+    &balancer_fixed,
+    &balancer_aimd,
     NULL  // Sentinel
 };
 
