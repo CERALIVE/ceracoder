@@ -15,7 +15,9 @@ The core value proposition is **adaptive bitrate control**: belacoder monitors S
 
 ```
 belacoder/
-├── belacoder.c           # Main application (single-file implementation)
+├── belacoder.c           # Main application (GStreamer + SRT integration)
+├── bitrate_control.c     # Adaptive bitrate algorithm implementation
+├── bitrate_control.h     # Bitrate controller API and constants
 ├── Makefile              # Build system (links gstreamer + libsrt via pkg-config)
 ├── Dockerfile            # Container build (installs CERALIVE/srt fork)
 ├── camlink_workaround/   # Git submodule for Elgato Cam Link quirks
@@ -26,6 +28,14 @@ belacoder/
 │   └── rk3588/           # Rockchip RK3588 hardware encoding
 └── docs/                 # Documentation (you are here)
 ```
+
+## Module Overview
+
+| Module | Files | Responsibility |
+|--------|-------|----------------|
+| Main | `belacoder.c` | GStreamer pipeline, SRT connection, CLI parsing, main loop |
+| Bitrate Control | `bitrate_control.c/h` | Adaptive bitrate algorithm (pure logic, no GStreamer dependency) |
+| Camlink Workaround | `camlink_workaround/` | USB quirks for Elgato Cam Link |
 
 ## Runtime Dataflow
 
@@ -106,12 +116,13 @@ All resources are properly cleaned up on exit:
 
 | Component | Location | Responsibility |
 |-----------|----------|----------------|
-| CLI parser | `main()` | Parse options, validate ranges |
-| Pipeline loader | `main()` | Read pipeline file, call `gst_parse_launch` |
-| SRT sender | `new_buf_cb()` | Chunk samples into SRT packets, call `srt_send` |
-| Bitrate controller | `update_bitrate()` | Adaptive bitrate based on RTT + send buffer |
-| Connection monitor | `connection_housekeeping()` | ACK timeout detection, stats polling |
-| Stall detector | `stall_check()` | Exit on pipeline stall |
+| CLI parser | `belacoder.c:main()` | Parse options, validate ranges |
+| Pipeline loader | `belacoder.c:main()` | Read pipeline file, call `gst_parse_launch` |
+| SRT sender | `belacoder.c:new_buf_cb()` | Chunk samples into SRT packets, call `srt_send` |
+| Bitrate controller | `bitrate_control.c:bitrate_update()` | Adaptive bitrate based on RTT + send buffer |
+| Bitrate context | `bitrate_control.h:BitrateContext` | All algorithm state in a single struct |
+| Connection monitor | `belacoder.c:connection_housekeeping()` | ACK timeout detection, stats polling |
+| Stall detector | `belacoder.c:stall_check()` | Exit on pipeline stall |
 
 ## GStreamer ↔ SRT Boundary
 
