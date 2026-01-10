@@ -1,22 +1,22 @@
-# belacoder Architecture
+# Ceracoder Architecture
 
-This document describes the high-level architecture of belacoder, a live video encoder with dynamic bitrate control and SRT streaming support.
+This document describes the high-level architecture of ceracoder, a live video encoder with dynamic bitrate control and SRT streaming support.
 
 ## Overview
 
-belacoder is a C application built on top of:
+Ceracoder is a C application built on top of:
 
 - **GStreamer** for media capture, encoding, and muxing
 - **libsrt** (SRT protocol) for reliable low-latency transport over unreliable networks
 
-The core value proposition is **adaptive bitrate control**: belacoder monitors SRT connection quality in real-time and adjusts the encoder bitrate to match available network capacity—critical for live streaming over bonded 4G/5G modems or other variable-bandwidth links.
+The core value proposition is **adaptive bitrate control**: ceracoder monitors SRT connection quality in real-time and adjusts the encoder bitrate to match available network capacity—critical for live streaming over bonded 4G/5G modems or other variable-bandwidth links.
 
 ## Repository Structure
 
 ```
-belacoder/
+ceracoder/
 ├── src/                      # Source code
-│   ├── belacoder.c           # Main application (orchestrates modules)
+│   ├── ceracoder.c           # Main application (orchestrates modules)
 │   ├── balancer.h            # Balancer algorithm interface
 │   ├── core/                 # Core logic modules
 │   │   ├── config.c/h        # INI config file parser
@@ -49,7 +49,7 @@ belacoder/
 ├── docs/                     # Documentation (you are here)
 ├── Makefile                  # Build system
 ├── Dockerfile                # Container build
-├── belacoder.conf.example    # Example configuration file
+├── ceracoder.conf.example    # Example configuration file
 └── README.md
 ```
 
@@ -57,7 +57,7 @@ belacoder/
 
 | Module | Files | Responsibility |
 |--------|-------|----------------|
-| Main | `src/belacoder.c` | Application entry point, main loop, signal handling |
+| Main | `src/ceracoder.c` | Application entry point, main loop, signal handling |
 | CLI Options | `src/io/cli_options.c/h` | Command-line argument parsing |
 | Config | `src/core/config.c/h` | INI config file parsing, runtime reload via SIGHUP |
 | Pipeline Loader | `src/io/pipeline_loader.c/h` | Load GStreamer pipeline from file |
@@ -119,7 +119,7 @@ flowchart TD
 2. **Pipeline construction**: Read a GStreamer pipeline description from a text file and call `gst_parse_launch()`.
 3. **Element binding**: Look up named elements:
    - `venc_bps` or `venc_kbps` → video encoder (for bitrate control)
-   - `appsink` → sink that hands buffers to belacoder
+   - `appsink` → sink that hands buffers to ceracoder
    - `overlay` (optional) → text overlay for on-screen stats
    - `a_delay` / `v_delay` (optional) → identity elements for PTS adjustment
    - `ptsfixup` (optional) → smooth PTS jitter for OBS compatibility
@@ -132,7 +132,7 @@ flowchart TD
 
 ## Signal Handling
 
-belacoder uses async-signal-safe signal handling:
+Ceracoder uses async-signal-safe signal handling:
 
 - **SIGTERM/SIGINT**: Handled via `g_unix_signal_add()` which safely integrates with the GLib main loop
 - **SIGHUP**: Uses a volatile flag (`reload_config_flag`) that is checked in `stall_check()` to safely reload config file or bitrate settings
@@ -162,8 +162,8 @@ All resources are properly cleaned up on exit:
 | Balancer registry | `src/core/balancer_registry.c` | Algorithm lookup by name, default selection |
 | Adaptive algorithm | `src/core/balancer_adaptive.c`, `src/core/bitrate_control.c` | RTT/buffer-based adaptive control |
 | AIMD algorithm | `src/core/balancer_aimd.c` | TCP-style congestion control |
-| Connection monitor | `src/belacoder.c:connection_housekeeping()` | ACK timeout detection, stats polling |
-| Stall detector | `src/belacoder.c:stall_check()` | Exit on pipeline stall, config reload |
+| Connection monitor | `src/ceracoder.c:connection_housekeeping()` | ACK timeout detection, stats polling |
+| Stall detector | `src/ceracoder.c:stall_check()` | Exit on pipeline stall, config reload |
 
 ## GStreamer ↔ SRT Boundary
 
@@ -173,7 +173,7 @@ The codebase maintains clean separation between GStreamer and SRT concerns:
 - **SRT-dependent modules**: `srt_client`
 - **Independent modules**: `cli_options`, `config`, `balancer_*`
 
-The `belacoder.c` main file orchestrates these modules but delegates specific responsibilities. The only direct coupling is the `appsink` callback pulling samples and forwarding them to SRT. This makes it feasible to swap the transport layer (e.g., RIST, WebRTC) without touching GStreamer code, or to swap the media engine without touching SRT code.
+The `ceracoder.c` main file orchestrates these modules but delegates specific responsibilities. The only direct coupling is the `appsink` callback pulling samples and forwarding them to SRT. This makes it feasible to swap the transport layer (e.g., RIST, WebRTC) without touching GStreamer code, or to swap the media engine without touching SRT code.
 
 ## Testing
 
@@ -225,7 +225,7 @@ Pipeline files are plain-text GStreamer launch strings. They must include:
 
 | Element | Required | Purpose |
 |---------|----------|---------|
-| `appsink name=appsink` | Yes (for SRT output) | Hands buffers to belacoder |
+| `appsink name=appsink` | Yes (for SRT output) | Hands buffers to ceracoder |
 | `name=venc_bps` or `name=venc_kbps` | For dynamic bitrate | Encoder with runtime-settable `bitrate` property |
 | `name=overlay` | Optional | On-screen stats overlay |
 | `name=a_delay` / `name=v_delay` | Optional | A/V sync adjustment |
@@ -249,11 +249,11 @@ appsink name=appsink
 
 ## Network Bonding Integration
 
-belacoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) for network bonding:
+Ceracoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) for network bonding:
 
 ```
 ┌──────────────┐      ┌─────────┐      ┌──────────┐      ┌─────────────┐
-│ belacoder    │─SRT─▶│ srtla   │─────▶│ Modem 1  │─────▶│             │
+│ ceracoder    │─SRT─▶│ srtla   │─────▶│ Modem 1  │─────▶│             │
 │              │      │ (local) │─────▶│ Modem 2  │─────▶│ srtla_rec   │─SRT─▶ Server
 │              │      │         │─────▶│ Modem 3  │─────▶│             │
 └──────────────┘      └─────────┘      └──────────┘      └─────────────┘

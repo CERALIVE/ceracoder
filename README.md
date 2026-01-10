@@ -129,8 +129,8 @@ Building
 --------
 
 ```bash
-git clone https://github.com/CERALIVE/belacoder.git
-cd belacoder
+git clone https://github.com/CERALIVE/ceracoder.git
+cd ceracoder
 make
 ```
 

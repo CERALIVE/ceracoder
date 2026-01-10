@@ -1,6 +1,6 @@
-# belacoder Dependencies
+# Ceracoder Dependencies
 
-This document lists all build-time and runtime dependencies for belacoder, along with minimum compatible versions, package names for common distributions, and verification commands.
+This document lists all build-time and runtime dependencies for ceracoder, along with minimum compatible versions, package names for common distributions, and verification commands.
 
 ## Quick Reference
 
@@ -15,7 +15,7 @@ This document lists all build-time and runtime dependencies for belacoder, along
 
 ## Build-time Dependencies (Always Required)
 
-These are needed to compile belacoder from source.
+These are needed to compile ceracoder from source.
 
 | Component | Ubuntu/Debian Package | Arch Package | Notes |
 |-----------|----------------------|--------------|-------|
@@ -44,7 +44,7 @@ pkg-config --libs gstreamer-1.0 gstreamer-app-1.0 srt
 
 ## Runtime Dependencies (Core)
 
-These are always needed to run belacoder, regardless of which pipeline you use.
+These are always needed to run ceracoder, regardless of which pipeline you use.
 
 | Component | Ubuntu/Debian Package | Arch Package | Notes |
 |-----------|----------------------|--------------|-------|

@@ -12,7 +12,7 @@ SRCDIR = src
 TESTDIR = tests
 
 # Object files
-OBJS = $(SRCDIR)/belacoder.o \
+OBJS = $(SRCDIR)/ceracoder.o \
        $(SRCDIR)/io/cli_options.o \
        $(SRCDIR)/io/pipeline_loader.o \
        $(SRCDIR)/net/srt_client.o \
@@ -28,7 +28,7 @@ OBJS = $(SRCDIR)/belacoder.o \
        camlink_workaround/camlink.o
 
 # Test object files (exclude main)
-TEST_OBJS = $(filter-out $(SRCDIR)/belacoder.o, $(OBJS))
+TEST_OBJS = $(filter-out $(SRCDIR)/ceracoder.o, $(OBJS))
 
 all: submodule ceracoder
 
