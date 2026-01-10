@@ -30,13 +30,13 @@ OBJS = $(SRCDIR)/belacoder.o \
 # Test object files (exclude main)
 TEST_OBJS = $(filter-out $(SRCDIR)/belacoder.o, $(OBJS))
 
-all: submodule belacoder
+all: submodule ceracoder
 
 submodule:
 	git submodule init
 	git submodule update
 
-belacoder: $(OBJS)
+ceracoder: $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 # Compile source files (matches subdirectories too)
@@ -77,7 +77,7 @@ lint:
 		-- $(CFLAGS)
 
 clean:
-	rm -f belacoder \
+	rm -f ceracoder \
 		$(SRCDIR)/*.o $(SRCDIR)/core/*.o $(SRCDIR)/io/*.o $(SRCDIR)/net/*.o $(SRCDIR)/gst/*.o \
 		$(TESTDIR)/*.o $(TESTDIR)/test_balancer $(TESTDIR)/test_integration $(TESTDIR)/test_srt $(TESTDIR)/test_srt_live_transmit camlink_workaround/*.o
 

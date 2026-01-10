@@ -1,5 +1,7 @@
 /*
-    belacoder - live video encoder with dynamic bitrate control
+    ceracoder - live video encoder with dynamic bitrate control
+    Forked from irlserver/belacoder, itself a fork of BELABOX/belacoder
+    
     Copyright (C) 2020 BELABOX project
     Copyright (C) 2026 CERALIVE
 

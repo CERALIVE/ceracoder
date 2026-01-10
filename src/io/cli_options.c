@@ -56,7 +56,7 @@ static int parse_long(const char *str, long *result, long min_val, long max_val)
 }
 
 void cli_options_print_usage(void) {
-    fprintf(stderr, "Syntax: belacoder PIPELINE_FILE ADDR PORT [options]\n\n");
+    fprintf(stderr, "Syntax: ceracoder PIPELINE_FILE ADDR PORT [options]\n\n");
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -v                  Print the version and exit\n");
     fprintf(stderr, "  -c <config file>    Configuration file (INI format)\n");

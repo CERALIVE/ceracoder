@@ -1,6 +1,6 @@
-# belacoder configuration file
+# ceracoder configuration file
 #
-# Reload while running with: kill -HUP $(pidof belacoder)
+# Reload while running with: kill -HUP $(pidof ceracoder)
 
 [general]
 # Bitrate limits (Kbps)

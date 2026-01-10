@@ -13,12 +13,12 @@ RUN mkdir -p /build; \
 	make -j$(nproc); \
 	make install;
 
-WORKDIR /belacoder
+WORKDIR /ceracoder
 COPY . .
 
-RUN mkdir -p /bela-out/usr/bin/
+RUN mkdir -p /cera-out/usr/bin/
 RUN make
-RUN cp ./belacoder /bela-out/usr/bin/
+RUN cp ./ceracoder /cera-out/usr/bin/
 
 FROM scratch AS export
-COPY --from=build /bela-out /
+COPY --from=build /cera-out /

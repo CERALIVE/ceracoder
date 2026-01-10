@@ -1,15 +1,17 @@
-belacoder - live video encoder with dynamic bitrate control and [SRT](https://github.com/CERALIVE/srt) support
+Ceracoder - live video encoder with dynamic bitrate control and [SRT](https://github.com/CERALIVE/srt) support
 =========
+
+**Ceracoder is a fork of [irlserver/belacoder](https://github.com/irlserver/belacoder), which itself is a fork of the original [BELABOX/belacoder](https://github.com/BELABOX/belacoder) project.**
 
 This is a [GStreamer](https://gstreamer.freedesktop.org/)-based encoder with support for [SRT](https://github.com/CERALIVE/srt) and dynamic bitrate control depending on the network capacity. This means that if needed, the video bitrate is automatically reduced on-the-fly to match the speed of the network connection. The intended application is live video streaming over bonded 4G modems by using it on a single board computer together with a HDMI capture card and [srtla](https://github.com/CERALIVE/srtla).
 
-belacoder is developed on an NVIDIA Jetson Nano ([Amazon.com](https://amzn.to/3mt2Coz) / [Amazon.co.uk](https://amzn.to/31IOgJ2) / [NVIDIA](https://developer.nvidia.com/embedded/jetson-nano-developer-kit)), and we provide GStreamer pipelines for using its hardware video encoding. However it can also be used on other platforms as long as the correct GStreamer pipeline is provided.
+Ceracoder is developed on an NVIDIA Jetson Nano ([Amazon.com](https://amzn.to/3mt2Coz) / [Amazon.co.uk](https://amzn.to/31IOgJ2) / [NVIDIA](https://developer.nvidia.com/embedded/jetson-nano-developer-kit)), and we provide GStreamer pipelines for using its hardware video encoding. However it can also be used on other platforms as long as the correct GStreamer pipeline is provided.
 
 
 Architecture at a glance
 ------------------------
 
-belacoder reads a GStreamer pipeline from a file, constructs it, and streams the output over SRT:
+Ceracoder reads a GStreamer pipeline from a file, constructs it, and streams the output over SRT:
 
 ```
 ┌──────────────┐      ┌─────────────┐      ┌───────────┐
@@ -31,13 +33,13 @@ The bitrate controller polls SRT statistics (RTT, send buffer) every 20 ms and a
 Network Bonding with srtla
 --------------------------
 
-belacoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) (SRT Link Aggregation) for bonding multiple network connections. This is the primary use case for live streaming over cellular networks.
+Ceracoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) (SRT Link Aggregation) for bonding multiple network connections. This is the primary use case for live streaming over cellular networks.
 
 ### How It Works
 
 ```
 ┌──────────────┐
-│ belacoder    │
+│ ceracoder    │
 │ (encoder +   │──SRT──▶┌─────────┐     ┌─────────┐
 │  SRT sender) │        │ srtla   │     │ Modem 1 │──┐
 └──────────────┘        │ (local) │────▶│ (4G/5G) │  │
@@ -52,7 +54,7 @@ belacoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) (S
                                         └─────────┘
 ```
 
-1. **belacoder** encodes video and sends SRT to localhost (where srtla runs)
+1. **ceracoder** encodes video and sends SRT to localhost (where srtla runs)
 2. **srtla** splits the SRT stream across multiple network interfaces (modems, WiFi, etc.)
 3. **srtla_rec** on the receiving end reassembles the stream and forwards to the SRT server
 
@@ -62,8 +64,8 @@ belacoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) (S
 # Terminal 1: Start srtla (bonding agent)
 srtla_send 127.0.0.1 5000 receiver.example.com 5000
 
-# Terminal 2: Start belacoder pointing to local srtla
-./belacoder pipeline/h264_camlink_1080p 127.0.0.1 5000 -s mystreamid -l 2000 -b bitrate.conf
+# Terminal 2: Start ceracoder pointing to local srtla
+./ceracoder pipeline/h264_camlink_1080p 127.0.0.1 5000 -s mystreamid -l 2000 -b bitrate.conf
 ```
 
 ### Why This Matters for Bitrate Control
@@ -73,7 +75,7 @@ When using multiple networks:
 - **Packet loss** on one link doesn't drop the stream (redundancy)
 - **Variable capacity** as modems enter/exit coverage areas
 
-belacoder's adaptive bitrate algorithm adjusts to the **combined capacity** of all bonded links as reported by SRT. When a modem drops out, SRT's buffer grows and RTT increases, triggering bitrate reduction. When capacity increases, belacoder gradually ramps up.
+Ceracoder's adaptive bitrate algorithm adjusts to the **combined capacity** of all bonded links as reported by SRT. When a modem drops out, SRT's buffer grows and RTT increases, triggering bitrate reduction. When capacity increases, ceracoder gradually ramps up.
 
 ### Configuration Tips
 
@@ -140,7 +142,7 @@ pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 srt
 
 ### Testing
 
-belacoder includes comprehensive integration tests that verify module behavior without requiring actual hardware:
+Ceracoder includes comprehensive integration tests that verify module behavior without requiring actual hardware:
 
 ```bash
 # Install test dependencies
@@ -178,7 +180,7 @@ Usage
 -----
 
 ```
-Syntax: belacoder PIPELINE_FILE ADDR PORT [options]
+Syntax: ceracoder PIPELINE_FILE ADDR PORT [options]
 
 Options:
   -v                  Print the version and exit
@@ -190,7 +192,7 @@ Options:
   -b <bitrate file>   Bitrate settings file (legacy, use -c instead)
   -a <algorithm>      Bitrate balancer algorithm (overrides config)
 
-Config file example (belacoder.conf):
+Config file example (ceracoder.conf):
 [general]
 min_bitrate = 500    # Kbps
 max_bitrate = 6000   # Kbps (6 Mbps)
@@ -207,7 +209,7 @@ decr_interval = 200  # Min interval between decreases (ms)
 
 ---
 Send SIGHUP to reload configuration while running:
-    kill -HUP $(pidof belacoder)
+    kill -HUP $(pidof ceracoder)
 ```
 
 Where:
@@ -215,13 +217,13 @@ Where:
 * `PIPELINE_FILE` is a text file containing the GStreamer pipeline to use. See the `pipeline` directory for ready-made pipelines.
 * `ADDR` is the hostname or IP address of the SRT listener to stream to.
 * `PORT` is the port of the SRT listener to stream to.
-* `-c <config file>` is the recommended way to configure bitrate bounds and algorithm settings. See `belacoder.conf.example` for a full example.
+* `-c <config file>` is the recommended way to configure bitrate bounds and algorithm settings. See `ceracoder.conf.example` for a full example.
 * `-d <delay>` is the optional delay in milliseconds to add to the audio stream relative to the video.
 * `-b <bitrate file>` is the legacy way to set bitrate bounds (use `-c` instead for new deployments).
 
 ### Balancer Algorithms
 
-belacoder supports multiple bitrate control algorithms:
+Ceracoder supports multiple bitrate control algorithms:
 
 | Algorithm | Description | Best For |
 |-----------|-------------|----------|
@@ -246,7 +248,7 @@ Note that to encode 4k / 2160p video captured by a camlink you must specifically
 
 ### Pipeline Requirements
 
-For belacoder features to work, pipelines must include specific named elements:
+For ceracoder features to work, pipelines must include specific named elements:
 
 | Element | Required | Purpose |
 |---------|----------|---------|
@@ -294,16 +296,16 @@ If the receiver requests higher latency, belacoder will use the higher value. Ad
 Docker
 ------
 
-A Dockerfile is provided that builds belacoder with the CERALIVE/srt fork:
+A Dockerfile is provided that builds ceracoder with the CERALIVE/srt fork:
 
 ```bash
 # Build the image
-docker build -t belacoder .
+docker build -t ceracoder .
 
 # Extract the binary
-docker create --name bc belacoder
-docker cp bc:/usr/bin/belacoder ./belacoder
-docker rm bc
+docker create --name cc ceracoder
+docker cp cc:/usr/bin/ceracoder ./ceracoder
+docker rm cc
 ```
 
 The container build installs SRT from [CERALIVE/srt](https://github.com/CERALIVE/srt) to `/usr`, so `pkg-config srt` works correctly inside the build.
@@ -318,4 +320,5 @@ Documentation
 
 
 License
--------belacoder is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
+-------
+Ceracoder is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
