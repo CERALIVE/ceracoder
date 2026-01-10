@@ -1,5 +1,5 @@
 ---
-# clang-tidy configuration for belacoder
+# clang-tidy configuration for ceracoder
 # Static analysis checks for C code
 
 Checks: >

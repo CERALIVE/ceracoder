@@ -265,7 +265,7 @@ When bonding multiple networks:
 2. **srtla** splits packets across multiple network interfaces
 3. **srtla_rec** reassembles and forwards to the destination
 
-The bitrate controller adapts to the **aggregate capacity** of all bonded links. SRT's RTT and buffer metrics reflect the combined network state, so belacoder automatically:
+The bitrate controller adapts to the **aggregate capacity** of all bonded links. SRT's RTT and buffer metrics reflect the combined network state, so ceracoder automatically:
 - Reduces bitrate when a modem loses signal
 - Increases bitrate as aggregate capacity improves
 - Maintains stable streaming despite individual link fluctuations
