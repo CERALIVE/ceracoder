@@ -34,6 +34,7 @@
 #include <srt/access_control.h>
 
 #include "bitrate_control.h"
+#include "balancer.h"
 
 // Ensure SRT version is at least 1.4.0 (required for SRTO_RETRANSMITALGO)
 #ifndef SRT_VERSION_VALUE
@@ -81,12 +82,15 @@ int enc_bitrate_div = 1;
 
 int av_delay = 0;
 
-// Bitrate control context (replaces individual bitrate globals)
-BitrateContext bitrate_ctx;
+// Balancer algorithm and state
+const BalancerAlgorithm *balancer_algo = NULL;
+void *balancer_state = NULL;
+BalancerConfig balancer_config;
 int min_bitrate = MIN_BITRATE;  // Keep for read_bitrate_file compatibility
 int max_bitrate = DEF_BITRATE;  // Keep for read_bitrate_file compatibility
 
 char *bitrate_filename = NULL;
+char *balancer_name = NULL;  // CLI option for --balancer
 
 int srt_latency = DEF_SRT_LATENCY;
 int srt_pkt_size = DEFAULT_SRT_PKT_SIZE;
@@ -230,9 +234,14 @@ int read_bitrate_file() {
   fclose(f);
   min_bitrate = br[0];
   max_bitrate = br[1];
-  // Update context if initialized
-  bitrate_ctx.min_bitrate = min_bitrate;
-  bitrate_ctx.max_bitrate = max_bitrate;
+  // Update balancer config and reinitialize if needed
+  balancer_config.min_bitrate = min_bitrate;
+  balancer_config.max_bitrate = max_bitrate;
+  if (balancer_algo != NULL && balancer_state != NULL) {
+    // Reinitialize algorithm with new config (loses accumulated state)
+    balancer_algo->cleanup(balancer_state);
+    balancer_state = balancer_algo->init(&balancer_config);
+  }
   return 0;
 
 ret_err:
@@ -248,23 +257,28 @@ void do_bitrate_update(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   int ret = srt_getsockflag(sock, SRTO_SNDDATA, &bs, &sz);
   if (ret != 0 || bs < 0) return;
 
-  // Call the bitrate control module
-  BitrateResult result;
-  static int prev_set_bitrate = 0;
+  // Prepare input for balancer
+  BalancerInput input = {
+    .buffer_size = bs,
+    .rtt = stats->msRTT,
+    .send_rate_mbps = stats->mbpsSendRate,
+    .timestamp = ctime
+  };
 
-  int new_bitrate = bitrate_update(&bitrate_ctx, bs, stats->msRTT,
-                                   stats->mbpsSendRate, ctime, &result);
+  // Call the balancer algorithm
+  static int prev_set_bitrate = 0;
+  BalancerOutput output = balancer_algo->step(balancer_state, &input);
 
   // Update the overlay display
-  update_overlay(result.new_bitrate, result.throughput,
-                 result.rtt, result.rtt_th_min, result.rtt_th_max,
-                 result.bs, result.bs_th1, result.bs_th2, result.bs_th3);
+  update_overlay(output.new_bitrate, output.throughput,
+                 output.rtt, output.rtt_th_min, output.rtt_th_max,
+                 output.bs, output.bs_th1, output.bs_th2, output.bs_th3);
 
   // Set encoder bitrate if changed
-  if (new_bitrate != prev_set_bitrate) {
-    prev_set_bitrate = new_bitrate;
-    g_object_set(G_OBJECT(encoder), "bps", new_bitrate / enc_bitrate_div, NULL);
-    debug("set bitrate to %d, internal value %d\n", new_bitrate, bitrate_ctx.cur_bitrate);
+  if (output.new_bitrate != prev_set_bitrate) {
+    prev_set_bitrate = output.new_bitrate;
+    g_object_set(G_OBJECT(encoder), "bps", output.new_bitrate / enc_bitrate_div, NULL);
+    debug("set bitrate to %d\n", output.new_bitrate);
   }
 }
 
@@ -440,14 +454,16 @@ void exit_syntax() {
   fprintf(stderr, "  -s <streamid>       SRT stream ID\n");
   fprintf(stderr, "  -l <latency>        SRT latency in milliseconds\n");
   fprintf(stderr, "  -r                  Reduced SRT packet size\n");
-  fprintf(stderr, "  -b <bitrate file>   Bitrate settings file, see below\n\n");
+  fprintf(stderr, "  -b <bitrate file>   Bitrate settings file, see below\n");
+  fprintf(stderr, "  -a <algorithm>      Bitrate balancer algorithm (default: adaptive)\n\n");
   fprintf(stderr, "Bitrate settings file syntax:\n");
   fprintf(stderr, "MIN BITRATE (bps)\n");
   fprintf(stderr, "MAX BITRATE (bps)\n---\n");
   fprintf(stderr, "example for 500 Kbps - 60000 Kbps:\n\n");
   fprintf(stderr, "    printf \"500000\\n6000000\" > bitrate_file\n\n");
   fprintf(stderr, "---\n");
-  fprintf(stderr, "Send SIGHUP to reload the bitrate settings while running.\n");
+  fprintf(stderr, "Send SIGHUP to reload the bitrate settings while running.\n\n");
+  balancer_print_available();
   exit(EXIT_FAILURE);
 }
 
@@ -562,8 +578,11 @@ int main(int argc, char** argv) {
   char *stream_id = NULL;
   srt_latency = DEF_SRT_LATENCY;
 
-  while ((opt = getopt(argc, argv, "d:b:s:l:rv")) != -1) {
+  while ((opt = getopt(argc, argv, "a:d:b:s:l:rv")) != -1) {
     switch (opt) {
+      case 'a':
+        balancer_name = optarg;
+        break;
       case 'b':
         bitrate_filename = optarg;
         break;
@@ -647,8 +666,30 @@ int main(int argc, char** argv) {
       exit_syntax();
     }
   }
-  // Initialize the bitrate controller
-  bitrate_context_init(&bitrate_ctx, min_bitrate, max_bitrate, srt_latency, srt_pkt_size);
+
+  // Select balancer algorithm
+  if (balancer_name != NULL) {
+    balancer_algo = balancer_find(balancer_name);
+    if (balancer_algo == NULL) {
+      fprintf(stderr, "Unknown balancer algorithm: %s\n\n", balancer_name);
+      balancer_print_available();
+      exit(EXIT_FAILURE);
+    }
+  } else {
+    balancer_algo = balancer_get_default();
+  }
+  fprintf(stderr, "Balancer: %s\n", balancer_algo->name);
+
+  // Initialize the balancer
+  balancer_config.min_bitrate = min_bitrate;
+  balancer_config.max_bitrate = max_bitrate;
+  balancer_config.srt_latency = srt_latency;
+  balancer_config.srt_pkt_size = srt_pkt_size;
+  balancer_state = balancer_algo->init(&balancer_config);
+  if (balancer_state == NULL) {
+    fprintf(stderr, "Failed to initialize balancer algorithm\n");
+    exit(EXIT_FAILURE);
+  }
   fprintf(stderr, "Max bitrate: %d\n", max_bitrate);
   signal(SIGHUP, sighup_handler);
 
@@ -658,7 +699,8 @@ int main(int argc, char** argv) {
     enc_bitrate_div = 1000;
   }
   if (GST_IS_ELEMENT(encoder)) {
-    g_object_set (G_OBJECT(encoder), "bps", bitrate_ctx.cur_bitrate / enc_bitrate_div, NULL);
+    // Start at max bitrate (all algorithms should start optimistically)
+    g_object_set(G_OBJECT(encoder), "bps", max_bitrate / enc_bitrate_div, NULL);
   } else {
     fprintf(stderr, "Failed to get an encoder element from the pipeline, "
                     "no dynamic bitrate control\n");
@@ -777,6 +819,11 @@ int main(int argc, char** argv) {
 
   // Clean up SRT library resources
   srt_cleanup();
+
+  // Clean up balancer
+  if (balancer_algo != NULL && balancer_state != NULL) {
+    balancer_algo->cleanup(balancer_state);
+  }
 
   // Clean up mmap'd pipeline file
   munmap(launch_string, launch_string_len);
