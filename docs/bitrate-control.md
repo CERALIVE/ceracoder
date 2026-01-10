@@ -1,6 +1,73 @@
-# Bitrate Control Algorithm
+# Bitrate Control
 
-This document describes the adaptive bitrate control algorithm implemented in belacoder. The algorithm monitors SRT connection quality and adjusts the video encoder's bitrate in real-time to match available network capacity.
+belacoder includes a pluggable bitrate control system that adjusts the video encoder's bitrate in real-time based on network conditions.
+
+## Available Algorithms
+
+| Algorithm | Description | Best For |
+|-----------|-------------|----------|
+| `adaptive` | RTT and buffer-based control (default) | General use, mobile streaming |
+| `fixed` | Constant bitrate, no adaptation | Testing, stable networks |
+| `aimd` | TCP-style AIMD (Additive Increase Multiplicative Decrease) | Fair bandwidth sharing |
+
+Select algorithm via CLI or config file:
+```bash
+# CLI
+./belacoder -a aimd pipeline.txt host 4000
+
+# Config file
+[general]
+balancer = adaptive
+```
+
+## Module Structure
+
+All source files are in the `src/` directory:
+
+| File | Purpose |
+|------|---------|
+| `src/balancer.h` | Algorithm interface (`BalancerAlgorithm` struct) |
+| `src/balancer_adaptive.c` | Default adaptive algorithm |
+| `src/balancer_fixed.c` | Fixed bitrate (no adaptation) |
+| `src/balancer_aimd.c` | AIMD algorithm |
+| `src/balancer_registry.c` | Algorithm registration and lookup |
+| `src/bitrate_control.h` | Adaptive algorithm internals (BitrateContext, constants) |
+| `src/bitrate_control.c` | Adaptive algorithm implementation |
+
+## Configuration
+
+All algorithms can be tuned via the config file:
+
+```ini
+[general]
+min_bitrate = 500     # Kbps (applies to all algorithms)
+max_bitrate = 6000    # Kbps
+
+[adaptive]
+incr_step = 30        # Increase step (Kbps)
+decr_step = 100       # Decrease step (Kbps)
+incr_interval = 500   # ms between increases
+decr_interval = 200   # ms between decreases
+
+[aimd]
+incr_step = 50        # Additive increase (Kbps)
+decr_mult = 0.75      # Multiplicative decrease (0.75 = reduce to 75%)
+```
+
+Reload config at runtime: `kill -HUP $(pidof belacoder)`
+
+---
+
+# Adaptive Algorithm Details
+
+The default `adaptive` algorithm monitors SRT connection quality and makes decisions based on:
+
+1. **RTT (Round-Trip Time)** from SRT statistics
+2. **Send buffer occupancy** from the SRT socket
+3. **Packet loss** detection
+4. **Throughput estimate** from SRT statistics
+
+The goal is to maximize video quality (high bitrate) while avoiding congestion.
 
 ## Overview
 
@@ -29,10 +96,67 @@ The goal is to maximize video quality (high bitrate) while avoiding congestion t
 | `SRTO_SNDDATA` | Current send buffer occupancy (packets) |
 | `SRTO_PEERLATENCY` | Negotiated latency with receiver |
 
-## State Variables
+## BitrateContext Structure
 
-The controller maintains several smoothed/derived values using exponential moving averages.
-Smoothing factors are defined as named constants for clarity:
+All algorithm state is encapsulated in a `BitrateContext` struct (defined in `bitrate_control.h`):
+
+```c
+typedef struct {
+    // Configuration (set once at init)
+    int min_bitrate;
+    int max_bitrate;
+    int srt_latency;
+    int srt_pkt_size;
+
+    // Current bitrate
+    int cur_bitrate;
+
+    // Buffer size tracking
+    double bs_avg;      // Rolling average (EMA_SLOW * old + EMA_FAST * new)
+    double bs_jitter;   // Maximum recent increase (decays: *= EMA_SLOW)
+    int prev_bs;        // Previous reading
+
+    // RTT tracking
+    double rtt_avg;       // Rolling average RTT
+    double rtt_min;       // Minimum observed (slowly drifts up: *= RTT_MIN_DRIFT)
+    double rtt_jitter;    // Maximum recent increase (decays: *= EMA_SLOW)
+    double rtt_avg_delta; // Average RTT change rate
+    int prev_rtt;         // Previous reading
+
+    // Throughput tracking
+    double throughput;    // Rolling average (converted to bps)
+
+    // Timing for rate limiting
+    uint64_t next_bitrate_incr;  // Earliest time for next increase
+    uint64_t next_bitrate_decr;  // Earliest time for next decrease
+} BitrateContext;
+```
+
+### API Functions
+
+```c
+// Initialize context with configuration and tuning parameters
+void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br,
+                          int latency, int pkt_size,
+                          int incr_step, int decr_step,
+                          int incr_interval, int decr_interval);
+
+// Update bitrate based on current SRT stats, returns new bitrate (rounded to 100 Kbps)
+int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
+                   double send_rate_mbps, uint64_t timestamp,
+                   int64_t pkt_loss_total, int64_t pkt_retrans_total,
+                   BitrateResult *result);
+```
+
+Tuning parameters (pass 0 to use defaults):
+- `incr_step` - Bitrate increase step (bps, default: 30000)
+- `decr_step` - Bitrate decrease step (bps, default: 100000)
+- `incr_interval` - Min interval between increases (ms, default: 500)
+- `decr_interval` - Min interval between decreases (ms, default: 200)
+
+## Smoothing Constants
+
+Smoothing factors are defined as named constants in `bitrate_control.h`:
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -44,38 +168,6 @@ Smoothing factors are defined as named constants for clarity:
 | `RTT_INITIAL` | 300 | Initial prev_rtt value |
 | `RTT_MIN_INITIAL` | 200.0 | Initial rtt_min value |
 | `RTT_IGNORE_VALUE` | 100 | RTT value indicating no valid measurement |
-
-### RTT State
-
-```c
-static double rtt_avg = 0;                  // Rolling average RTT (EMA_SLOW * old + EMA_FAST * new)
-static double rtt_min = RTT_MIN_INITIAL;    // Minimum observed RTT (slowly drifts up: *= RTT_MIN_DRIFT)
-static double rtt_jitter = 0;               // Maximum recent RTT increase (decays: *= EMA_SLOW)
-static double rtt_avg_delta = 0;            // Average RTT change rate (EMA_RTT_DELTA * old + 0.2 * new)
-static int prev_rtt = RTT_INITIAL;          // Previous RTT reading
-```
-
-### Send Buffer State
-
-```c
-static double bs_avg = 0;         // Rolling average buffer size (EMA_SLOW * old + EMA_FAST * new)
-static double bs_jitter = 0;      // Maximum recent buffer increase (decays: *= EMA_SLOW)
-static int prev_bs = 0;           // Previous buffer reading
-```
-
-### Throughput State
-
-```c
-static double throughput = 0.0;   // Rolling average throughput (EMA_THROUGHPUT * old + 0.03 * new)
-                                  // Converted from Mbps to bps
-```
-
-### Timing State
-
-```c
-static uint64_t next_bitrate_incr = 0;  // Earliest time for next increase
-static uint64_t next_bitrate_decr = 0;  // Earliest time for next decrease
-```
 
 ## Thresholds
 
@@ -277,13 +369,15 @@ flowchart TD
 3. **Uses multiple signals**: Combines RTT and buffer occupancy for robustness
 4. **Adaptive thresholds**: Thresholds adjust based on observed conditions
 
-## Limitations and Improvement Opportunities
+## Limitations and Future Improvements
 
-1. **Single algorithm**: No way to select alternative strategies at runtime
+1. ~~**Single algorithm**~~: ✅ Resolved - Multiple algorithms now available via `-a` flag
 2. **Fixed smoothing factors**: May not adapt well to different network characteristics
 3. **Latency coupling**: Thresholds tied to configured SRT latency (1/3, 1/5)
 4. **No bandwidth probing**: Only increases when conditions are stable, no active probing
-5. **Magic numbers**: Many tuning constants that could benefit from configuration
+
+> **Note**: New algorithms can be added by implementing the `BalancerAlgorithm` interface
+> in `balancer.h` and registering in `balancer_registry.c`.
 
 
 ## ACK Timeout Detection

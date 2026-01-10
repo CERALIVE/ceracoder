@@ -1,0 +1,52 @@
+# belacoder configuration file
+#
+# Reload while running with: kill -HUP $(pidof belacoder)
+
+[general]
+# Bitrate limits (Kbps)
+# Examples: 500 = 500 Kbps, 6000 = 6 Mbps, 12000 = 12 Mbps
+min_bitrate = 500
+max_bitrate = 6000
+
+# Balancer algorithm - controls how bitrate adapts to network conditions
+# Options:
+#   adaptive - RTT and buffer-based control, reacts to congestion (default)
+#   fixed    - Constant bitrate, no adaptation (uses max_bitrate)
+#   aimd     - TCP-style Additive Increase Multiplicative Decrease
+balancer = adaptive
+
+[srt]
+# SRT latency buffer (milliseconds)
+# Higher = more resilient to packet loss, but adds delay
+# Range: 100-10000, typical: 1500-3000 for mobile streaming
+latency = 2000
+
+# Note: stream_id is set via -s flag (not in config, rarely changes)
+
+# ============================================================================
+# ALGORITHM TUNING
+#
+# These sections customize each algorithm's behavior.
+# All values are optional - defaults are used if omitted.
+# ============================================================================
+
+[adaptive]
+# Bitrate adjustment steps (Kbps)
+incr_step = 30          # Increase step when stable (default: 30)
+decr_step = 100         # Decrease step on congestion (default: 100)
+
+# Timing (milliseconds)
+incr_interval = 500     # Minimum ms between increases (default: 500)
+decr_interval = 200     # Minimum ms between decreases (default: 200)
+
+# Note: loss_threshold is not yet configurable
+
+[aimd]
+# AIMD-specific tuning
+incr_step = 50          # Additive increase step (Kbps, default: 50)
+decr_mult = 0.75        # Multiplicative decrease (0.0-1.0, default: 0.75)
+                        # 0.75 means reduce to 75% on congestion
+
+# Timing (milliseconds)
+incr_interval = 500     # Minimum ms between increases (default: 500)
+decr_interval = 200     # Minimum ms between decreases (default: 200)

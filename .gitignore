@@ -1,2 +1,13 @@
+# Compiled binary
 belacoder
-belacoder.o
+
+# Test binaries
+tests/test_balancer
+tests/test_integration
+
+# Object files
+*.o
+
+# Editor files
+*.swp
+*~
