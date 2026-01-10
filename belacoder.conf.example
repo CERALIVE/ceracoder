@@ -21,7 +21,7 @@ balancer = adaptive
 # Range: 100-10000, typical: 1500-3000 for mobile streaming
 latency = 2000
 
-# Optional SRT stream ID for authentication
+# Optional SRT stream ID for authentication (can be overridden with -s flag)
 # stream_id = your_stream_key_here
 
 # ============================================================================
