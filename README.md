@@ -140,23 +140,38 @@ pkg-config --modversion gstreamer-1.0 gstreamer-app-1.0 srt
 
 ### Testing
 
-belacoder includes integration tests that verify module behavior without requiring actual hardware:
+belacoder includes comprehensive integration tests that verify module behavior without requiring actual hardware:
 
 ```bash
-# Install cmocka (test framework)
+# Install test dependencies
 sudo apt-get install libcmocka-dev
 
-# Run all tests
+# Basic tests (balancer algorithms, module integration)
 make test
+
+# Full test suite (includes SRT network integration tests)
+make test_all
 ```
 
 Tests verify:
-- Balancer algorithm behavior (adaptive, fixed, AIMD)
-- Config loading and reload
+- Balancer algorithm behavior (adaptive, fixed, AIMD) - 16 tests
+- Config loading and reload - 8 tests
+- SRT network operations (in-process and external listener) - 13 tests
 - Bitrate bounds enforcement
 - Network condition responses
 
-See [docs/architecture.md](docs/architecture.md) for details on the modular architecture and testing approach.
+The test suite includes both unit-style tests with fakes and real SRT network integration tests.
+
+### Code Quality
+
+The project uses clang-tidy for static analysis:
+
+```bash
+# Run static analysis locally
+make lint
+```
+
+Static analysis runs automatically in CI on every push/PR. The configuration is tuned for C code with GStreamer patterns.
 
 
 Usage

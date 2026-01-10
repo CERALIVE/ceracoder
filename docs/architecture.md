@@ -35,8 +35,10 @@ belacoder/
 │       ├── encoder_control.c/h   # Video encoder bitrate control
 │       └── overlay_ui.c/h        # On-screen stats overlay
 ├── tests/                    # Integration tests (cmocka)
-│   ├── test_balancer.c       # Balancer algorithm tests
-│   ├── test_integration.c    # Module integration tests
+│   ├── test_balancer.c       # Balancer algorithm tests (16 tests)
+│   ├── test_integration.c    # Module integration tests (8 tests)
+│   ├── test_srt_integration.c     # SRT in-process listener tests (7 tests)
+│   ├── test_srt_live_transmit.c   # SRT external listener tests (6 tests)
 │   └── test_fakes.c/h        # Test stubs/fakes
 ├── camlink_workaround/       # Git submodule for Elgato Cam Link quirks
 ├── pipeline/                 # GStreamer pipeline templates by platform
@@ -175,30 +177,47 @@ The `belacoder.c` main file orchestrates these modules but delegates specific re
 
 ## Testing
 
-The project includes integration tests that verify module interactions without requiring actual hardware or network connections:
+The project includes comprehensive integration tests that verify module interactions without requiring actual hardware or network connections:
 
 ```bash
+# Basic tests (no network required)
 make test
+
+# Full test suite (includes SRT network tests)
+make test_all
 ```
 
 ### Test Structure
 
-- **`tests/test_balancer.c`** - Tests all balancer algorithms (adaptive, fixed, AIMD) including:
+- **`tests/test_balancer.c`** (16 tests) - Tests all balancer algorithms (adaptive, fixed, AIMD) including:
   - Bitrate increase on good network
   - Bitrate decrease on congestion
   - Packet loss handling
   - Min/max bounds enforcement
 
-- **`tests/test_integration.c`** - Tests module integration including:
+- **`tests/test_integration.c`** (8 tests) - Tests module integration including:
   - Config loading and reload
   - Balancer initialization from config
   - CLI option overrides
   - End-to-end balancer flow
   - Rapid network condition changes
 
+- **`tests/test_srt_integration.c`** (7 tests) - SRT network tests with in-process listener:
+  - Connection establishment
+  - Data transmission and verification
+  - Statistics retrieval
+  - Connection failure scenarios
+  - Stream ID support
+
+- **`tests/test_srt_live_transmit.c`** (6 tests) - External SRT binary integration:
+  - Real-world integration with `srt-live-transmit`
+  - Large data transfer (~650KB)
+  - Graceful skip when binary unavailable
+  - All connection scenarios
+
 - **`tests/test_fakes.{c,h}`** - Fake implementations of GStreamer and SRT for testing
 
-Tests use [cmocka](https://cmocka.org/) as the test framework.
+Tests use [cmocka](https://cmocka.org/) as the test framework. The SRT integration tests provide confidence that the networking layer works correctly with real SRT implementations.
 
 ## Pipeline Templates
 
