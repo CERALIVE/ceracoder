@@ -101,7 +101,7 @@ Dependencies
 | libsrt     | 1.4.0+  | **Enforced at compile time**; recommend [CERALIVE/srt](https://github.com/CERALIVE/srt) fork |
 | GCC/Clang  | 4.9/3.5 | C99 support |
 
-> **Note:** belacoder includes a compile-time check for SRT 1.4.0+. If you see an error like `#error "SRT 1.4.0 or later required"`, upgrade your libsrt installation.
+> **Note:** ceracoder includes a compile-time check for SRT 1.4.0+. If you see an error like `#error "SRT 1.4.0 or later required"`, upgrade your libsrt installation.
 
 ### Quick Install (Ubuntu 20.04+)
 
@@ -252,7 +252,7 @@ For ceracoder features to work, pipelines must include specific named elements:
 
 | Element | Required | Purpose |
 |---------|----------|---------|
-| `appsink name=appsink` | Yes (for SRT output) | Hands buffers to belacoder for SRT transmission |
+| `appsink name=appsink` | Yes (for SRT output) | Hands buffers to ceracoder for SRT transmission |
 | `name=venc_bps` or `name=venc_kbps` | For dynamic bitrate | Video encoder with runtime-settable `bitrate` property |
 | `name=overlay` | Optional | Text overlay for on-screen bitrate/stats display |
 | `name=a_delay` / `name=v_delay` | Optional | Identity elements for A/V sync adjustment |
@@ -290,7 +290,7 @@ The negotiated SRT latency is printed on connect:
 SRT connected to example.com:4000. Negotiated latency: 2000 ms
 ```
 
-If the receiver requests higher latency, belacoder will use the higher value. Adjust with `-l <ms>` if needed.
+If the receiver requests higher latency, ceracoder will use the higher value. Adjust with `-l <ms>` if needed.
 
 
 Docker

@@ -110,7 +110,7 @@ These require Rockchip's MPP (Media Process Platform) libraries and a compatible
 
 ## SRT Installation
 
-belacoder requires libsrt with specific BELABOX patches for optimal performance. We recommend building from the **CERALIVE/srt** fork:
+Ceracoder requires libsrt with specific BELABOX patches for optimal performance. We recommend building from the **CERALIVE/srt** fork:
 
 ```bash
 # Clone the CERALIVE/srt fork
@@ -130,7 +130,7 @@ pkg-config --modversion srt   # should print version ≥ 1.4.0
 
 ### Why CERALIVE/srt?
 
-The [CERALIVE/srt](https://github.com/CERALIVE/srt) fork is described as an "up-to-date fork of the SRT shared library with BELABOX changes." It includes patches that improve behavior for the CERALIVE/belacoder use case, particularly around:
+The [CERALIVE/srt](https://github.com/CERALIVE/srt) fork is described as an "up-to-date fork of the SRT shared library with BELABOX changes." It includes patches that improve behavior for the ceracoder use case, particularly around:
 
 - Retransmission algorithm tuning
 - Statistics reporting

@@ -1,6 +1,6 @@
 # Bitrate Control
 
-belacoder includes a pluggable bitrate control system that adjusts the video encoder's bitrate in real-time based on network conditions.
+Ceracoder includes a pluggable bitrate control system that adjusts the video encoder's bitrate in real-time based on network conditions.
 
 ## Available Algorithms
 
@@ -13,7 +13,7 @@ belacoder includes a pluggable bitrate control system that adjusts the video enc
 Select algorithm via CLI or config file:
 ```bash
 # CLI
-./belacoder -a aimd pipeline.txt host 4000
+./ceracoder -a aimd pipeline.txt host 4000
 
 # Config file
 [general]
@@ -54,7 +54,7 @@ incr_step = 50        # Additive increase (Kbps)
 decr_mult = 0.75      # Multiplicative decrease (0.75 = reduce to 75%)
 ```
 
-Reload config at runtime: `kill -HUP $(pidof belacoder)`
+Reload config at runtime: `kill -HUP $(pidof ceracoder)`
 
 ---
 
