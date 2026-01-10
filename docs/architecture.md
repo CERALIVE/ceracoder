@@ -15,24 +15,26 @@ The core value proposition is **adaptive bitrate control**: belacoder monitors S
 
 ```
 belacoder/
-├── belacoder.c           # Main application (GStreamer + SRT integration)
-├── config.c/h            # INI config file parser
-├── balancer.h            # Balancer algorithm interface
-├── balancer_adaptive.c   # Default adaptive algorithm (RTT/buffer-based)
-├── balancer_fixed.c      # Fixed bitrate (no adaptation)
-├── balancer_aimd.c       # AIMD algorithm (TCP-style)
-├── balancer_registry.c   # Algorithm registration and lookup
-├── bitrate_control.c/h   # Adaptive algorithm internals (BitrateContext)
-├── Makefile              # Build system (links gstreamer + libsrt via pkg-config)
-├── Dockerfile            # Container build (installs CERALIVE/srt fork)
-├── belacoder.conf.example # Example configuration file
-├── camlink_workaround/   # Git submodule for Elgato Cam Link quirks
-├── pipeline/             # GStreamer pipeline templates by platform
-│   ├── generic/          # Software encoding (x264)
-│   ├── jetson/           # NVIDIA Jetson hardware encoding (nvv4l2h265enc)
-│   ├── n100/             # Intel N100 hardware encoding
-│   └── rk3588/           # Rockchip RK3588 hardware encoding
-└── docs/                 # Documentation (you are here)
+├── src/                      # Source code
+│   ├── belacoder.c           # Main application (GStreamer + SRT integration)
+│   ├── config.c/h            # INI config file parser
+│   ├── balancer.h            # Balancer algorithm interface
+│   ├── balancer_adaptive.c   # Default adaptive algorithm (RTT/buffer-based)
+│   ├── balancer_fixed.c      # Fixed bitrate (no adaptation)
+│   ├── balancer_aimd.c       # AIMD algorithm (TCP-style)
+│   ├── balancer_registry.c   # Algorithm registration and lookup
+│   └── bitrate_control.c/h   # Adaptive algorithm internals (BitrateContext)
+├── camlink_workaround/       # Git submodule for Elgato Cam Link quirks
+├── pipeline/                 # GStreamer pipeline templates by platform
+│   ├── generic/              # Software encoding (x264)
+│   ├── jetson/               # NVIDIA Jetson hardware encoding (nvv4l2h265enc)
+│   ├── n100/                 # Intel N100 hardware encoding
+│   └── rk3588/               # Rockchip RK3588 hardware encoding
+├── docs/                     # Documentation (you are here)
+├── Makefile                  # Build system
+├── Dockerfile                # Container build (installs CERALIVE/srt fork)
+├── belacoder.conf.example    # Example configuration file
+└── README.md
 ```
 
 ## Module Overview

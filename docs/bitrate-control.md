@@ -22,15 +22,17 @@ balancer = adaptive
 
 ## Module Structure
 
+All source files are in the `src/` directory:
+
 | File | Purpose |
 |------|---------|
-| `balancer.h` | Algorithm interface (`BalancerAlgorithm` struct) |
-| `balancer_adaptive.c` | Default adaptive algorithm |
-| `balancer_fixed.c` | Fixed bitrate (no adaptation) |
-| `balancer_aimd.c` | AIMD algorithm |
-| `balancer_registry.c` | Algorithm registration and lookup |
-| `bitrate_control.h` | Adaptive algorithm internals (BitrateContext, constants) |
-| `bitrate_control.c` | Adaptive algorithm implementation |
+| `src/balancer.h` | Algorithm interface (`BalancerAlgorithm` struct) |
+| `src/balancer_adaptive.c` | Default adaptive algorithm |
+| `src/balancer_fixed.c` | Fixed bitrate (no adaptation) |
+| `src/balancer_aimd.c` | AIMD algorithm |
+| `src/balancer_registry.c` | Algorithm registration and lookup |
+| `src/bitrate_control.h` | Adaptive algorithm internals (BitrateContext, constants) |
+| `src/bitrate_control.c` | Adaptive algorithm implementation |
 
 ## Configuration
 
