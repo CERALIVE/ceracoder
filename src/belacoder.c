@@ -85,7 +85,7 @@ uint64_t getms() {
   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
     return 0;
   }
-  return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+  return ((uint64_t)ts.tv_sec * 1000) + ((uint64_t)ts.tv_nsec / 1000000);
 }
 
 // Parse a string to long with full error checking
@@ -159,7 +159,8 @@ gboolean stall_check(gpointer data) {
   // Check for SIGHUP-triggered config reload
   if (reload_config_flag) {
     reload_config_flag = 0;
-    int min_bitrate, max_bitrate;
+    int min_bitrate;
+    int max_bitrate;
     int reloaded = 0;
 
     // Reload config file if specified
@@ -306,7 +307,7 @@ GstFlowReturn new_buf_cb(GstAppSink *sink, gpointer user_data) {
   gst_buffer_map(buffer, &map, GST_MAP_READ);
 
   // Send srt_pkt_size packets, splitting and merging samples if needed
-  int sample_sz = map.size;
+  int sample_sz = (int)map.size;
   do {
     int copy_sz = MIN(srt_pkt_size - pkt_len, sample_sz);
     memcpy((void *)pkt + pkt_len, map.data, copy_sz);
@@ -375,7 +376,8 @@ static void cb_ptsfixup(GstElement *identity, GstBuffer *buffer, gpointer data) 
 
   // First frame, obtain the framerate and initial PTS
   if (pts == 0) {
-    int fr_numerator = 0, fr_denominator = 0;
+    int fr_numerator = 0;
+    int fr_denominator = 0;
     if (get_sink_framerate(identity, &fr_numerator, &fr_denominator) == 0) {
       pts = input_pts;
       period = GST_SECOND * fr_denominator / fr_numerator;
@@ -393,15 +395,15 @@ static void cb_ptsfixup(GstElement *identity, GstBuffer *buffer, gpointer data) 
        and even slight drifting over time due to temperature or voltage variation
        Have to add AVG_ROUNDING to avoid precision loss due to dividing by AVG_MULT
     */
-    period = (period * AVG_PREV + AVG_ROUNDING) / AVG_MULT +
-             ((input_pts - prev_pts) * AVG_WEIGHT + AVG_ROUNDING)/ AVG_MULT;
+    period = ((period * AVG_PREV + AVG_ROUNDING) / AVG_MULT) +
+             (((input_pts - prev_pts) * AVG_WEIGHT + AVG_ROUNDING) / AVG_MULT);
 
     /* As long as the input PTS is within 0 to 2.0 periods of the previous
        output PTS, assume that it was a continuous read at period ns from
        the previous frame and increment the PTS accordingly. Otherwise, handle
        the discontinuity by either dropping an input buffer or skipping an
        output period, as needed. */
-    long diff = input_pts - pts;
+    long diff = (long)(input_pts - pts);
     long incr = (diff/2 + period) / period * period;
     if (incr > 0) {
       pts += incr;
@@ -577,7 +579,7 @@ int main(int argc, char** argv) {
             break;
         }
         fprintf(stderr, "Failed to establish an SRT connection: %s. Retrying...\n", reason);
-        struct timespec retry_delay = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
+        struct timespec retry_delay = { .tv_sec = 0, .tv_nsec = 500L * 1000L * 1000L };
         nanosleep(&retry_delay, NULL);
       }
     } while(ret_srt != 0);

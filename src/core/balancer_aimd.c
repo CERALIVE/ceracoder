@@ -111,8 +111,8 @@ static BalancerOutput aimd_step(void *state_ptr, const BalancerInput *input) {
         state->rtt_baseline = input->rtt;
     } else {
         // Slow drift upward
-        state->rtt_baseline = state->rtt_baseline * AIMD_RTT_BASELINE_EMA +
-                              input->rtt * (1.0 - AIMD_RTT_BASELINE_EMA);
+        state->rtt_baseline = (state->rtt_baseline * AIMD_RTT_BASELINE_EMA) +
+                              (input->rtt * (1.0 - AIMD_RTT_BASELINE_EMA));
     }
 
     // Detect congestion

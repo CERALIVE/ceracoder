@@ -71,7 +71,7 @@ int srt_client_connect(SrtClient *client, const char *host, const char *port,
     }
 
     if (stream_id != NULL) {
-        if (srt_setsockflag(client->socket, SRTO_STREAMID, stream_id, strlen(stream_id)) != 0) {
+        if (srt_setsockflag(client->socket, SRTO_STREAMID, stream_id, (int)strlen(stream_id)) != 0) {
             fprintf(stderr, "Failed to set SRTO_STREAMID: %s\n", srt_getlasterror_str());
             freeaddrinfo(addrs);
             return -4;
@@ -87,7 +87,7 @@ int srt_client_connect(SrtClient *client, const char *host, const char *port,
 
     int connected = -3;
     for (struct addrinfo *addr = addrs; addr != NULL; addr = addr->ai_next) {
-        ret = srt_connect(client->socket, addr->ai_addr, addr->ai_addrlen);
+        ret = srt_connect(client->socket, addr->ai_addr, (int)addr->ai_addrlen);
         if (ret == 0) {
             connected = 0;
 
