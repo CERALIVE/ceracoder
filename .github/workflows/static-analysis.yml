@@ -1,0 +1,40 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  clang-tidy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-tidy \
+            cmake \
+            pkg-config \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev
+      
+      - name: Install SRT library
+        run: |
+          git clone https://github.com/CERALIVE/srt.git /tmp/srt
+          cd /tmp/srt
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+      
+      - name: Run clang-tidy
+        run: make lint

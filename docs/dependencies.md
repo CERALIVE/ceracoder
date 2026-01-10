@@ -193,6 +193,77 @@ cd /path/to/belacoder
 make
 ```
 
+## Testing Dependencies (Optional)
+
+These dependencies are required only if you want to run the full test suite:
+
+| Component | Ubuntu/Debian Package | Arch Package | Purpose |
+|-----------|----------------------|--------------|---------|
+| cmocka | `libcmocka-dev` | `cmocka` | Unit testing framework |
+| srt-tools | `srt-tools` or manual install | `srt` (includes tools) | Integration tests with `srt-live-transmit` |
+
+### Installing Test Dependencies
+
+**Ubuntu/Debian:**
+```bash
+# Install cmocka (required for all tests)
+sudo apt-get install libcmocka-dev
+
+# Install srt-tools (optional, for external SRT listener tests)
+# May need to build from source if not in repos
+sudo apt-get install srt-tools || \
+  (cd /tmp/srt/build && sudo make install)  # Installs tools alongside libsrt
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S cmocka
+# srt package includes srt-live-transmit
+```
+
+### Running Tests
+
+```bash
+# Basic tests (balancer + module integration, no network)
+make test
+
+# Full test suite (includes SRT network tests)
+make test_all
+```
+
+**Note:** The `test_srt_live_transmit` test gracefully skips all tests if `srt-live-transmit` is not found in PATH. This allows CI/CD systems and developers without the binary to still run other tests successfully.
+
+## Development Dependencies (Optional)
+
+These tools are useful for development and code quality but not required for building or running belacoder:
+
+| Tool | Ubuntu/Debian Package | Arch Package | Purpose |
+|------|----------------------|--------------|---------|
+| clang-tidy | `clang-tidy` | `clang` (includes clang-tidy) | Static code analysis |
+
+### Installing Development Tools
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install clang-tidy
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S clang  # Includes clang-tidy
+```
+
+### Running Static Analysis
+
+```bash
+# Run clang-tidy on all source files
+make lint
+```
+
+The static analysis checks for common bugs, performance issues, and code quality problems. The project includes a [`.clang-tidy`](../.clang-tidy) configuration that defines which checks are enabled.
+
+**Note:** Static analysis runs automatically in CI on every push and pull request via the [Static Analysis GitHub workflow](../.github/workflows/static-analysis.yml).
+
 ## Complete Install (Arch Linux)
 
 ```bash

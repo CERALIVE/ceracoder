@@ -46,6 +46,9 @@ $(SRCDIR)/%.o: $(SRCDIR)/%.c
 # Test targets
 test: submodule test_balancer test_integration
 
+# Full test suite including SRT network tests
+test_all: submodule test_balancer test_integration test_srt test_srt_live_transmit
+
 test_balancer: $(TESTDIR)/test_balancer.o $(TEST_OBJS)
 	$(CC) $(TEST_CFLAGS) $^ -o $(TESTDIR)/$@ $(TEST_LDFLAGS)
 	./$(TESTDIR)/$@
@@ -54,13 +57,29 @@ test_integration: $(TESTDIR)/test_integration.o $(TEST_OBJS)
 	$(CC) $(TEST_CFLAGS) $^ -o $(TESTDIR)/$@ $(TEST_LDFLAGS)
 	./$(TESTDIR)/$@
 
+# SRT integration tests (requires network, runs actual SRT connections)
+test_srt: $(TESTDIR)/test_srt_integration.o $(SRCDIR)/net/srt_client.o
+	$(CC) $(TEST_CFLAGS) $^ -o $(TESTDIR)/$@ $(TEST_LDFLAGS) -lpthread
+	./$(TESTDIR)/$@
+
+# SRT live transmit integration tests (requires srt-live-transmit binary)
+test_srt_live_transmit: $(TESTDIR)/test_srt_live_transmit.o $(SRCDIR)/net/srt_client.o
+	$(CC) $(TEST_CFLAGS) $^ -o $(TESTDIR)/$@ $(TEST_LDFLAGS)
+	./$(TESTDIR)/$@
+
 $(TESTDIR)/%.o: $(TESTDIR)/%.c
 	$(CC) $(TEST_CFLAGS) -c $< -o $@
+
+# Static analysis with clang-tidy
+lint:
+	@echo "Running clang-tidy static analysis..."
+	@clang-tidy $(SRCDIR)/**/*.c $(SRCDIR)/*.c \
+		-- $(CFLAGS)
 
 clean:
 	rm -f belacoder \
 		$(SRCDIR)/*.o $(SRCDIR)/core/*.o $(SRCDIR)/io/*.o $(SRCDIR)/net/*.o $(SRCDIR)/gst/*.o \
-		$(TESTDIR)/*.o $(TESTDIR)/test_balancer $(TESTDIR)/test_integration camlink_workaround/*.o
+		$(TESTDIR)/*.o $(TESTDIR)/test_balancer $(TESTDIR)/test_integration $(TESTDIR)/test_srt $(TESTDIR)/test_srt_live_transmit camlink_workaround/*.o
 
-.PHONY: all submodule clean test test_balancer test_integration
+.PHONY: all submodule clean test test_all test_balancer test_integration test_srt test_srt_live_transmit lint
 

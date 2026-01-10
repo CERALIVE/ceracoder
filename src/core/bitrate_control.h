@@ -27,9 +27,9 @@
  */
 
 // Bitrate limits
-#define MIN_BITRATE (300 * 1000)
-#define ABS_MAX_BITRATE (30 * 1000 * 1000)
-#define DEF_BITRATE (6 * 1000 * 1000)
+#define MIN_BITRATE (300L * 1000L)
+#define ABS_MAX_BITRATE (30L * 1000L * 1000L)
+#define DEF_BITRATE (6L * 1000L * 1000L)
 
 // Update intervals (ms)
 #define BITRATE_UPDATE_INT 20

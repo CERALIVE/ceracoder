@@ -1,0 +1,43 @@
+---
+# clang-tidy configuration for belacoder
+# Static analysis checks for C code
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-casting-through-void,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-branch-clone,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  performance-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
+  -readability-identifier-length,
+  -readability-avoid-const-params-in-decls,
+  -readability-avoid-nested-conditional-operator,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-macro-to-enum
+
+# Treat warnings as errors: empty means no (only actual errors fail)
+WarningsAsErrors: ''
+
+# Filter headers to check
+HeaderFilterRegex: 'src/.*\.h'
+
+# Use LLVM style for formatting suggestions
+FormatStyle: llvm
+
+CheckOptions:
+  - key: readability-braces-around-statements.ShortStatementLines
+    value: '2'
+  - key: readability-function-size.LineThreshold
+    value: '200'
+  - key: readability-function-size.StatementThreshold
+    value: '150'
+  - key: modernize-use-nullptr.NullMacros
+    value: 'NULL'
