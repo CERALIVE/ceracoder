@@ -53,15 +53,46 @@ void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br, int laten
     // Throughput tracking
     ctx->throughput = 0.0;
 
+    // Packet loss tracking
+    ctx->prev_pkt_loss = 0;
+    ctx->prev_pkt_retrans = 0;
+    ctx->loss_rate = 0.0;
+
     // Timing
     ctx->next_bitrate_incr = 0;
     ctx->next_bitrate_decr = 0;
 }
 
+// Packet loss detection threshold
+#define LOSS_RATE_THRESHOLD 0.5   // Trigger congestion if losing > 0.5 packets/interval
+#define EMA_LOSS 0.9              // Smoothing for loss rate
+#define EMA_LOSS_NEW 0.1
+
 int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
-                   double send_rate_mbps, uint64_t timestamp, BitrateResult *result) {
+                   double send_rate_mbps, uint64_t timestamp,
+                   int64_t pkt_loss_total, int64_t pkt_retrans_total,
+                   BitrateResult *result) {
     int bs = buffer_size;
     int rtt_int = (int)rtt;
+
+    /*
+     * Packet loss tracking
+     */
+    int64_t loss_delta = pkt_loss_total - ctx->prev_pkt_loss;
+    int64_t retrans_delta = pkt_retrans_total - ctx->prev_pkt_retrans;
+    ctx->prev_pkt_loss = pkt_loss_total;
+    ctx->prev_pkt_retrans = pkt_retrans_total;
+
+    // Smooth the loss rate (packet losses per update interval)
+    if (loss_delta > 0 || retrans_delta > 0) {
+        double new_loss = (double)(loss_delta + retrans_delta);
+        ctx->loss_rate = ctx->loss_rate * EMA_LOSS + new_loss * EMA_LOSS_NEW;
+    } else {
+        ctx->loss_rate *= EMA_LOSS;  // Decay when no loss
+    }
+
+    // Flag for packet loss congestion
+    int pkt_loss_congestion = (ctx->loss_rate > LOSS_RATE_THRESHOLD);
 
     /*
      * Send buffer size stats
@@ -122,6 +153,12 @@ int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
 
     /*
      * Bitrate decision logic
+     *
+     * Congestion signals (in priority order):
+     * 1. Emergency: RTT >= latency/3 OR buffer > bs_th3
+     * 2. Heavy: RTT > latency/5 OR buffer > bs_th2 OR packet loss
+     * 3. Light: RTT > rtt_th_max OR buffer > bs_th1
+     * 4. Stable: RTT < rtt_th_min AND RTT not rising AND no packet loss
      */
     // Use int64_t for bitrate calculations to prevent overflow at high bitrates
     int64_t bitrate = ctx->cur_bitrate;
@@ -132,8 +169,8 @@ int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
         ctx->next_bitrate_decr = timestamp + BITRATE_DECR_INT;
 
     } else if (timestamp > ctx->next_bitrate_decr &&
-               (rtt_int > (ctx->srt_latency / 5) || bs > bs_th2)) {
-        // Heavy congestion: fast decrease
+               (rtt_int > (ctx->srt_latency / 5) || bs > bs_th2 || pkt_loss_congestion)) {
+        // Heavy congestion: fast decrease (now includes packet loss)
         bitrate -= BITRATE_DECR_MIN + bitrate / BITRATE_DECR_SCALE;
         ctx->next_bitrate_decr = timestamp + BITRATE_DECR_FAST_INT;
 
@@ -144,8 +181,9 @@ int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
         ctx->next_bitrate_decr = timestamp + BITRATE_DECR_INT;
 
     } else if (timestamp > ctx->next_bitrate_incr &&
-               rtt_int < rtt_th_min && ctx->rtt_avg_delta < RTT_STABLE_DELTA) {
-        // Stable: increase
+               rtt_int < rtt_th_min && ctx->rtt_avg_delta < RTT_STABLE_DELTA &&
+               !pkt_loss_congestion) {
+        // Stable: increase (only if no packet loss)
         bitrate += BITRATE_INCR_MIN + bitrate / BITRATE_INCR_SCALE;
         ctx->next_bitrate_incr = timestamp + BITRATE_INCR_INT;
     }

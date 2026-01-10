@@ -95,6 +95,11 @@ typedef struct {
     // Throughput tracking
     double throughput;
 
+    // Packet loss tracking
+    int64_t prev_pkt_loss;      // Previous loss count (for delta)
+    int64_t prev_pkt_retrans;   // Previous retrans count (for delta)
+    double loss_rate;           // Smoothed packet loss rate (packets/interval)
+
     // Timing for rate limiting bitrate changes
     uint64_t next_bitrate_incr;
     uint64_t next_bitrate_decr;
@@ -129,12 +134,16 @@ void bitrate_context_init(BitrateContext *ctx, int min_br, int max_br, int laten
  *   rtt         - Current round-trip time (ms)
  *   send_rate_mbps - Current send rate from SRT stats (Mbps)
  *   timestamp   - Current timestamp in milliseconds
+ *   pkt_loss_total - Total packets lost (cumulative from SRT stats)
+ *   pkt_retrans_total - Total packets retransmitted (cumulative)
  *   result      - Output structure (can be NULL if debug info not needed)
  *
  * Returns:
- *   The new bitrate in bps (rounded to 100 Kbps), or -1 if no update
+ *   The new bitrate in bps (rounded to 100 Kbps)
  */
 int bitrate_update(BitrateContext *ctx, int buffer_size, double rtt,
-                   double send_rate_mbps, uint64_t timestamp, BitrateResult *result);
+                   double send_rate_mbps, uint64_t timestamp,
+                   int64_t pkt_loss_total, int64_t pkt_retrans_total,
+                   BitrateResult *result);
 
 #endif /* BITRATE_CONTROL_H */

@@ -40,6 +40,8 @@ typedef struct {
     double rtt;           // Current round-trip time (ms)
     double send_rate_mbps;// Current send rate (Mbps)
     uint64_t timestamp;   // Current timestamp (ms)
+    int64_t pkt_loss_total;  // Total packets lost (cumulative)
+    int64_t pkt_retrans_total; // Total packets retransmitted (cumulative)
 } BalancerInput;
 
 /*

@@ -262,7 +262,9 @@ void do_bitrate_update(SRT_TRACEBSTATS *stats, uint64_t ctime) {
     .buffer_size = bs,
     .rtt = stats->msRTT,
     .send_rate_mbps = stats->mbpsSendRate,
-    .timestamp = ctime
+    .timestamp = ctime,
+    .pkt_loss_total = stats->pktSndLossTotal,
+    .pkt_retrans_total = stats->pktRetransTotal
   };
 
   // Call the balancer algorithm

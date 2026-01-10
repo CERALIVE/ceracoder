@@ -72,6 +72,8 @@ static BalancerOutput adaptive_step(void *state_ptr, const BalancerInput *input)
                                      input->rtt,
                                      input->send_rate_mbps,
                                      input->timestamp,
+                                     input->pkt_loss_total,
+                                     input->pkt_retrans_total,
                                      &result);
 
     // Convert BitrateResult to BalancerOutput
