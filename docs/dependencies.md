@@ -188,8 +188,8 @@ make -j$(nproc)
 sudo make install
 sudo ldconfig
 
-# Build belacoder
-cd /path/to/belacoder
+# Build ceracoder
+cd /path/to/ceracoder
 make
 ```
 
@@ -279,8 +279,8 @@ cmake .. -DCMAKE_INSTALL_PREFIX=/usr
 make -j$(nproc)
 sudo make install
 
-# Build belacoder
-cd /path/to/belacoder
+# Build ceracoder
+cd /path/to/ceracoder
 make
 ```
 

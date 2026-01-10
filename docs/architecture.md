@@ -261,7 +261,7 @@ Ceracoder is designed to work with [srtla](https://github.com/CERALIVE/srtla) fo
 
 When bonding multiple networks:
 
-1. **belacoder** connects to localhost where srtla runs
+1. **ceracoder** connects to localhost where srtla runs
 2. **srtla** splits packets across multiple network interfaces
 3. **srtla_rec** reassembles and forwards to the destination
 
