@@ -1,9 +1,24 @@
 name: Build and Release Ceracoder
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      release_type:
+        description: "Release type"
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+        default: stable
+      release_notes:
+        description: "Release notes (what changed in this release)"
+        required: false
+        type: string
+      force_version:
+        description: "Override auto-detected version (optional, e.g., 2026.1.0)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -15,6 +30,7 @@ jobs:
     outputs:
       version: ${{ steps.calver.outputs.version }}
       version_tag: ${{ steps.calver.outputs.version_tag }}
+      is_beta: ${{ steps.calver.outputs.is_beta }}
     
     steps:
       - name: Checkout code
@@ -22,32 +38,76 @@ jobs:
         with:
           fetch-depth: 0
       
-      - name: Calculate calendar version (YYYY.M.patch format like CeraUI)
+      - name: Calculate CalVer version with beta support
         id: calver
+        env:
+          RELEASE_TYPE: ${{ github.event.inputs.release_type }}
+          FORCE_VERSION: ${{ github.event.inputs.force_version }}
         run: |
           # Get current year and month (no leading zeros for month)
           YEAR=$(date -u +"%Y")
           MONTH=$(date -u +"%-m")  # %-m removes leading zero
+          IS_BETA=$([[ "$RELEASE_TYPE" == "beta" ]] && echo "true" || echo "false")
           
-          # Find the latest tag for this year.month
-          LATEST_TAG=$(git tag -l "v${YEAR}.${MONTH}.*" | sort -V | tail -n 1)
-          
-          if [ -z "$LATEST_TAG" ]; then
-            # No tags for this year.month yet, start at .0
-            PATCH=0
+          # Check if force_version is provided
+          if [ -n "$FORCE_VERSION" ]; then
+            VERSION="$FORCE_VERSION"
+            echo "📌 Using forced version: $VERSION"
           else
-            # Extract patch number and increment
-            PATCH=$(echo "$LATEST_TAG" | sed -E "s/v${YEAR}\.${MONTH}\.([0-9]+).*/\1/")
-            PATCH=$((PATCH + 1))
+            # Find existing tags for this year.month
+            PREFIX="v${YEAR}.${MONTH}"
+            
+            if [ "$IS_BETA" == "true" ]; then
+              # For beta: find highest beta number for this month
+              LATEST_BETA=$(git tag -l "${PREFIX}.*-beta.*" | sed -E "s/.*-beta\.([0-9]+)/\1/" | sort -n | tail -1)
+              
+              if [ -z "$LATEST_BETA" ]; then
+                BETA_NUM=1
+                echo "🧪 First beta of ${YEAR}.${MONTH}"
+              else
+                BETA_NUM=$((LATEST_BETA + 1))
+                echo "🔄 Incrementing beta: ${LATEST_BETA} → ${BETA_NUM}"
+              fi
+              
+              # Get the base patch (latest stable or 0)
+              LATEST_STABLE=$(git tag -l "${PREFIX}.*" | grep -v beta | sed "s/${PREFIX}\.//" | sort -n | tail -1)
+              PATCH=${LATEST_STABLE:-0}
+              NEXT_PATCH=$((PATCH + 1))
+              
+              VERSION="${YEAR}.${MONTH}.${NEXT_PATCH}-beta.${BETA_NUM}"
+            else
+              # For stable: find highest patch number (excluding betas)
+              LATEST_PATCH=$(git tag -l "${PREFIX}.*" | grep -v beta | sed "s/${PREFIX}\.//" | sort -n | tail -1)
+              
+              if [ -z "$LATEST_PATCH" ]; then
+                PATCH=0
+                echo "📅 First release of ${YEAR}.${MONTH}"
+              else
+                PATCH=$((LATEST_PATCH + 1))
+                echo "🔄 Incrementing patch: ${LATEST_PATCH} → ${PATCH}"
+              fi
+              
+              VERSION="${YEAR}.${MONTH}.${PATCH}"
+            fi
           fi
           
-          VERSION="${YEAR}.${MONTH}.${PATCH}"
+          VERSION_TAG="v${VERSION}"
           
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "version_tag=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_tag=${VERSION_TAG}" >> $GITHUB_OUTPUT
+          echo "is_beta=${IS_BETA}" >> $GITHUB_OUTPUT
           
-          echo "📅 Calculated CalVer version: ${VERSION} (YYYY.M.patch format)"
-          echo "🏷️  Version tag: v${VERSION}"
+          echo "✅ Next version: ${VERSION}"
+          echo "🏷️  Tag: ${VERSION_TAG}"
+          echo "🧪 Beta: ${IS_BETA}"
+      
+      - name: Version Summary
+        run: |
+          echo "## 🏷️ Version Calculated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ steps.calver.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** \`${{ steps.calver.outputs.version_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ steps.calver.outputs.is_beta == 'true' && '🧪 Beta' || '✅ Stable' }}" >> $GITHUB_STEP_SUMMARY
 
   build-release:
     name: Build ${{ matrix.arch }}
@@ -107,11 +167,12 @@ jobs:
     name: Create Release
     needs: [version, build-release]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -123,67 +184,100 @@ jobs:
           mkdir -p release-files
           find release-artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release-files/ \;
           ls -lh release-files/
+      
+      - name: Generate release body
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          VERSION_TAG: ${{ needs.version.outputs.version_tag }}
+          IS_BETA: ${{ needs.version.outputs.is_beta }}
+          RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+        run: |
+          # Get the previous tag for changelog
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          # Generate changelog
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG_HEADER="Changes since ${PREV_TAG}:"
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s" --no-merges | head -20)
+          else
+            CHANGELOG_HEADER="Recent commits:"
+            CHANGELOG=$(git log --pretty=format:"- %s" --no-merges -20)
+          fi
+          
+          DATE=$(date -u +"%Y-%m-%d")
+          
+          # Build release body
+          {
+            echo "# Ceracoder ${VERSION_TAG}"
+            echo ""
+            if [ "$IS_BETA" == "true" ]; then
+              echo "> ⚠️ **This is a beta release.** It may contain bugs or incomplete features. Use in production at your own risk."
+              echo ""
+            fi
+            echo "**Release Date:** ${DATE}"
+            echo ""
+            echo "## 📦 Downloads"
+            echo ""
+            echo "| Architecture | File |"
+            echo "|--------------|------|"
+            echo "| x86_64 (amd64) | \`ceracoder-linux-x86_64-v${VERSION}.tar.gz\` |"
+            echo "| ARM64 | \`ceracoder-linux-arm64-v${VERSION}.tar.gz\` |"
+            echo ""
+            echo "SHA256 checksums are provided for verification."
+            echo ""
+            echo "## 📝 Installation"
+            echo ""
+            echo "\`\`\`bash"
+            echo "# Download and extract"
+            echo "tar -xzf ceracoder-linux-*.tar.gz"
+            echo "sudo mv ceracoder /usr/local/bin/"
+            echo ""
+            echo "# Verify installation"
+            echo "ceracoder -v"
+            echo "\`\`\`"
+            echo ""
+            echo "## 📋 Release Notes"
+            echo ""
+            echo "${RELEASE_NOTES:-No release notes provided.}"
+            echo ""
+            echo "## 🔄 What's Changed"
+            echo ""
+            echo "${CHANGELOG_HEADER}"
+            echo ""
+            echo "${CHANGELOG}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "**Ceracoder** is a fork of [irlserver/belacoder](https://github.com/irlserver/belacoder), itself a fork of [BELABOX/belacoder](https://github.com/BELABOX/belacoder)."
+            echo ""
+            echo "🤖 Built with GitHub Actions using CalVer (YYYY.M.patch) versioning"
+          } > release-body.md
+          
+          echo "📄 Generated release body:"
+          cat release-body.md
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ needs.version.outputs.version }}
-          name: Ceracoder v${{ needs.version.outputs.version }}
+          tag_name: ${{ needs.version.outputs.version_tag }}
+          name: Ceracoder ${{ needs.version.outputs.version_tag }}${{ needs.version.outputs.is_beta == 'true' && ' (Beta)' || '' }}
+          body_path: release-body.md
           files: release-files/*
-          body: |
-            ## Ceracoder v${{ needs.version.outputs.version }}
-            
-            ### Downloads
-            
-            - **Linux x86_64**: `ceracoder-linux-x86_64-v${{ needs.version.outputs.version }}.tar.gz`
-            - **Linux ARM64**: `ceracoder-linux-arm64-v${{ needs.version.outputs.version }}.tar.gz`
-            
-            SHA256 checksums are provided for verification.
-            
-            ### Installation
-            
-            ```bash
-            # Download and extract
-            tar -xzf ceracoder-linux-*.tar.gz
-            sudo mv ceracoder /usr/local/bin/
-            
-            # Verify installation
-            ceracoder -v
-            ```
-            
-            ### What's Changed
-            
-            See commit history for details.
-            
-            ---
-            
-            **Ceracoder** is a fork of [irlserver/belacoder](https://github.com/irlserver/belacoder), itself a fork of [BELABOX/belacoder](https://github.com/BELABOX/belacoder).
           draft: false
-          prerelease: false
+          prerelease: ${{ needs.version.outputs.is_beta == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  
-  upload-to-existing-release:
-    name: Upload to Existing Release
-    needs: [version, build-release]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
       
-      - name: Prepare release assets
+      - name: Release Summary
         run: |
-          mkdir -p release-files
-          find release-artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release-files/ \;
-          ls -lh release-files/
-      
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: release-files/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "## 🎉 Release Created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** \`${{ needs.version.outputs.version_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ needs.version.outputs.is_beta == 'true' && '🧪 Beta (Pre-release)' || '✅ Stable' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Assets Uploaded:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          ls -1 release-files/ | while read f; do echo "- \`$f\`" >> $GITHUB_STEP_SUMMARY; done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 [View Release](https://github.com/${{ github.repository }}/releases/tag/${{ needs.version.outputs.version_tag }})" >> $GITHUB_STEP_SUMMARY

@@ -317,6 +317,7 @@ Documentation
 * [Architecture](docs/architecture.md) – System overview and dataflow
 * [Dependencies](docs/dependencies.md) – Full dependency list with versions
 * [Bitrate Control](docs/bitrate-control.md) – Adaptive bitrate algorithm details
+* [Versioning](docs/versioning.md) – CalVer versioning scheme with beta release support
 
 
 License
