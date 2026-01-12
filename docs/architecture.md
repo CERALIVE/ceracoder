@@ -72,19 +72,19 @@ ceracoder/
 | AIMD Algorithm | `src/core/balancer_aimd.c` | TCP-style congestion control |
 | Camlink Workaround | `camlink_workaround/` | USB quirks for Elgato Cam Link |
 
-## Runtime Dataflow
+## Runtime Dataflow (Encoder Device)
 
 ```mermaid
 flowchart TD
   subgraph Input
     PipelineFile[Pipeline File]
-    CLI[CLI Args: host, port, streamid, latency, delay, bitrate file]
+    CLI[CLI Args: host, port, streamid, latency, delay, config]
   end
 
   subgraph GStreamer
     GstParseLaunch[gst_parse_launch]
     GstPipeline[GstPipeline]
-    Encoder[Video Encoder venc_bps / venc_kbps]
+    Encoder[Video Encoder (venc_bps/venc_kbps)]
     AppSink[appsink]
   end
 
@@ -112,6 +112,50 @@ flowchart TD
   SrtStats --> Controller
   Controller -->|g_object_set bitrate| Encoder
 ```
+
+## End-to-End Streaming Flow (Encoder → Server)
+
+```
+ENCODER DEVICE (Field)                       SERVER (Ingest/Cloud)
+======================                       =====================
+
+Video Source (HDMI/USB/etc)
+        |
+        v
+   ceracoder (GStreamer internal)
+        |
+        | SRT (localhost)
+        v
+     srtla (sender)
+        |
+   +----+----+----+
+   |         |    |
+ Modem1   Modem2  WiFi
+        \    |    /
+         \   |   /
+          \  |  /
+          Internet
+                |
+                v
+                          srtla_rec
+                     +--------------+
+                     | reassemble   |
+                     +------+-------+
+                            |
+                            v
+                      srt-live-transmit
+                     +---------------+
+                     | relay/bridge  |
+                     +-------+-------+
+                             |
+                             v
+                        OBS / Player / CDN
+```
+
+## TypeScript Bindings (`@ceralive/ceracoder`)
+- PipelineBuilder for hardware-specific GStreamer pipelines (Jetson, RK3588, N100, Generic)
+- Zod schemas for config/CLI
+- Process helpers: resolve executable, spawn ceracoder, send SIGHUP (reload), write config/pipeline files
 
 ### Step-by-step flow
 
