@@ -320,6 +320,15 @@ Documentation
 * [Versioning](docs/versioning.md) – CalVer versioning scheme with beta release support
 
 
+Support the Project
+-------------------
+
+If you find Ceracoder useful, consider supporting CeraLive development:
+
+- ☕ [Ko-fi](https://ko-fi.com/andrescera)
+- 💳 [PayPal](https://www.paypal.com/donate/?business=7KKQS9KBSAMNE&no_recurring=0&item_name=CERALIVE+Development+Support&currency_code=USD)
+
+
 License
 -------
 Ceracoder is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
