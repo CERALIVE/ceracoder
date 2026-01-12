@@ -1,0 +1,29 @@
+{
+  "name": "@ceralive/ceracoder",
+  "version": "0.1.0",
+  "description": "Type-safe ceracoder bindings (config + CLI helpers) for CeraUI integration.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.5",
+    "typescript": "^5.9.3"
+  },
+  "license": "GPL-3.0",
+  "keywords": [
+    "ceracoder",
+    "srt",
+    "gstreamer",
+    "ceralive",
+    "config",
+    "cli"
+  ]
+}
