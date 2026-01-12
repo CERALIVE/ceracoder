@@ -4,7 +4,12 @@
  * Provides utilities for finding, spawning, and signaling the ceracoder process.
  */
 
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import {
+	spawn,
+	execSync,
+	type ChildProcess,
+	type SpawnOptions,
+} from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -13,6 +18,29 @@ const DEFAULT_EXEC_NAME = "ceracoder";
 const DEFAULT_SYSTEM_PATH = "/usr/bin/ceracoder";
 const DEFAULT_CONFIG_PATH = "/tmp/ceracoder.conf";
 const DEFAULT_PIPELINE_PATH = "/tmp/ceracoder_pipeline";
+
+/**
+ * Try to find an executable in the system PATH using 'which' (Unix) or 'where' (Windows).
+ * Returns the full path if found, or undefined if not found.
+ */
+function findInPath(binaryName: string): string | undefined {
+	try {
+		const isWindows = process.platform === "win32";
+		const command = isWindows ? `where ${binaryName}` : `which ${binaryName}`;
+		const result = execSync(command, {
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		}).trim();
+		// 'where' on Windows may return multiple lines, take the first
+		const firstLine = result.split("\n")[0]?.trim();
+		if (firstLine && fs.existsSync(firstLine)) {
+			return firstLine;
+		}
+	} catch {
+		// Command failed or binary not found in PATH
+	}
+	return undefined;
+}
 
 /**
  * Options for finding the ceracoder executable
@@ -31,8 +59,9 @@ export interface CeracoderPathOptions {
  * Resolution order:
  * 1. If execPath is provided and is a file, use it directly
  * 2. If execPath is a directory, look for ceracoder inside
- * 3. Check if ceracoder is in PATH (returns just "ceracoder")
- * 4. Fall back to /usr/bin/ceracoder
+ * 3. Try to auto-detect from system PATH using 'which'/'where'
+ * 4. Check if /usr/bin/ceracoder exists
+ * 5. Fall back to "ceracoder" (let PATH decide at spawn time)
  */
 export function getCeracoderExec(options: CeracoderPathOptions = {}): string {
 	const { execPath } = options;
@@ -52,6 +81,12 @@ export function getCeracoderExec(options: CeracoderPathOptions = {}): string {
 		return execPath.endsWith(DEFAULT_EXEC_NAME)
 			? execPath
 			: path.join(execPath, DEFAULT_EXEC_NAME);
+	}
+
+	// Try to auto-detect from system PATH
+	const pathResult = findInPath(DEFAULT_EXEC_NAME);
+	if (pathResult) {
+		return pathResult;
 	}
 
 	// Check system path
