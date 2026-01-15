@@ -1,0 +1,285 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: "Release type"
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+        default: stable
+
+jobs:
+  calculate-version:
+    name: Calculate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calver.outputs.version }}
+      channel: ${{ steps.calver.outputs.channel }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate CalVer version
+        id: calver
+        env:
+          RELEASE_TYPE: ${{ github.event.inputs.release_type || 'beta' }}
+        run: |
+          YEAR=$(date -u +"%Y")
+          MONTH=$(date -u +"%-m")
+          IS_BETA=$([[ "$RELEASE_TYPE" == "beta" ]] && echo "true" || echo "false")
+
+          PREFIX="v${YEAR}.${MONTH}"
+
+          if [ "$IS_BETA" == "true" ]; then
+            LATEST_BETA=$(git tag -l "${PREFIX}.*-beta.*" | sed -E "s/.*-beta\.([0-9]+)/\1/" | sort -n | tail -1)
+            if [ -z "$LATEST_BETA" ]; then
+              BETA_NUM=1
+            else
+              BETA_NUM=$((LATEST_BETA + 1))
+            fi
+            LATEST_STABLE=$(git tag -l "${PREFIX}.*" | grep -v beta | sed "s/${PREFIX}\.//" | sort -n | tail -1)
+            PATCH=${LATEST_STABLE:-0}
+            NEXT_PATCH=$((PATCH + 1))
+            VERSION="${YEAR}.${MONTH}.${NEXT_PATCH}-beta.${BETA_NUM}"
+            CHANNEL="beta"
+          else
+            LATEST_PATCH=$(git tag -l "${PREFIX}.*" | grep -v beta | sed "s/${PREFIX}\.//" | sort -n | tail -1)
+            if [ -z "$LATEST_PATCH" ]; then
+              PATCH=0
+            else
+              PATCH=$((LATEST_PATCH + 1))
+            fi
+            VERSION="${YEAR}.${MONTH}.${PATCH}"
+            CHANNEL="stable"
+          fi
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "channel=${CHANNEL}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION} (Channel: ${CHANNEL})"
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: calculate-version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build in Docker (${{ matrix.arch }})
+        run: |
+          mkdir -p build-output
+
+          cat > Dockerfile.build << 'DOCKERFILE'
+          FROM debian:bookworm
+
+          RUN apt-get update && apt-get install -y \
+              build-essential \
+              cmake \
+              pkg-config \
+              libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev \
+              libsrt-dev \
+              && rm -rf /var/lib/apt/lists/*
+
+          WORKDIR /src
+          COPY . .
+
+          RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+          RUN cmake --build build -j$(nproc)
+          RUN DESTDIR=/output cmake --install build
+          DOCKERFILE
+
+          docker buildx build \
+            --platform linux/${{ matrix.arch }} \
+            --output type=local,dest=build-output \
+            -f Dockerfile.build \
+            .
+
+      - name: Install FPM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby-dev gcc g++
+          sudo gem install fpm
+
+      - name: Create packages
+        env:
+          VERSION: ${{ needs.calculate-version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+
+          # Create .deb package
+          fpm -s dir -t deb \
+            -n ceracoder \
+            -v "${VERSION}" \
+            -a "${ARCH}" \
+            --description "Live video encoder with dynamic bitrate control and SRT support" \
+            --maintainer "CERALIVE <contact@ceralive.com>" \
+            --url "https://github.com/CERALIVE/ceracoder" \
+            --license "GPL-3.0" \
+            --depends "srtla" \
+            --depends "gstlibuvch264src" \
+            --depends "libgstreamer1.0-0" \
+            --depends "libgstreamer-plugins-base1.0-0" \
+            -p "dist/ceracoder_${VERSION}_${ARCH}.deb" \
+            build-output/usr/=/usr/
+
+          # Create .tar.gz archive
+          mkdir -p tarball/ceracoder-${VERSION}
+          cp -r build-output/usr/* tarball/ceracoder-${VERSION}/
+          cd tarball
+          tar -czvf ../dist/ceracoder_${VERSION}_${ARCH}.tar.gz ceracoder-${VERSION}
+          cd ..
+
+          # Create checksums
+          cd dist
+          sha256sum ceracoder_${VERSION}_${ARCH}.deb > ceracoder_${VERSION}_${ARCH}.deb.sha256
+          sha256sum ceracoder_${VERSION}_${ARCH}.tar.gz > ceracoder_${VERSION}_${ARCH}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ceracoder-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/*.sha256
+
+  sign-and-publish:
+    name: Sign and Publish to R2
+    needs: [calculate-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare dist directory
+        run: |
+          mkdir -p dist/arm64 dist/amd64 dist/release
+          mv artifacts/ceracoder-arm64/*.deb dist/arm64/
+          mv artifacts/ceracoder-amd64/*.deb dist/amd64/
+          cp artifacts/ceracoder-arm64/*.tar.gz dist/release/
+          cp artifacts/ceracoder-amd64/*.tar.gz dist/release/
+          cp artifacts/ceracoder-arm64/*.sha256 dist/release/
+          cp artifacts/ceracoder-amd64/*.sha256 dist/release/
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.DEB_SIGNING_KEY_B64 }}" | base64 -d | gpg --batch --import
+
+      - name: Install apt-utils
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+
+      - name: Generate and sign repo metadata (arm64)
+        run: |
+          cd dist/arm64
+          dpkg-scanpackages . > Packages
+          gzip -k Packages
+          apt-ftparchive release . > Release
+          gpg --batch --yes -abs -o Release.gpg Release
+          gpg --batch --yes --clearsign -o InRelease Release
+
+      - name: Generate and sign repo metadata (amd64)
+        run: |
+          cd dist/amd64
+          dpkg-scanpackages . > Packages
+          gzip -k Packages
+          apt-ftparchive release . > Release
+          gpg --batch --yes -abs -o Release.gpg Release
+          gpg --batch --yes --clearsign -o InRelease Release
+
+      - name: Install AWS CLI
+        run: |
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+
+      - name: Upload to R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CHANNEL: ${{ needs.calculate-version.outputs.channel }}
+        run: |
+          aws configure set aws_access_key_id "$R2_ACCESS_KEY_ID"
+          aws configure set aws_secret_access_key "$R2_SECRET_ACCESS_KEY"
+
+          aws s3 sync dist/arm64/ "s3://$R2_BUCKET/dists/$CHANNEL/binary-arm64/" \
+            --endpoint-url "$R2_ENDPOINT"
+          aws s3 sync dist/amd64/ "s3://$R2_BUCKET/dists/$CHANNEL/binary-amd64/" \
+            --endpoint-url "$R2_ENDPOINT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.calculate-version.outputs.version }}
+          name: ceracoder v${{ needs.calculate-version.outputs.version }}
+          prerelease: ${{ needs.calculate-version.outputs.channel == 'beta' }}
+          files: |
+            dist/arm64/*.deb
+            dist/amd64/*.deb
+            dist/release/*.tar.gz
+            dist/release/*.sha256
+          body: |
+            ## ceracoder v${{ needs.calculate-version.outputs.version }}
+
+            Live video encoder with dynamic bitrate control and SRT support.
+
+            ### Dependency Chain
+            ```
+            srt
+              └── srtla
+                    └── ceracoder (this package)
+                          ├── Depends: srtla, gstlibuvch264src
+                          ├── Depends: libgstreamer1.0-0, libgstreamer-plugins-base1.0-0
+                          │
+                          └── Used by: ceralive-device
+            
+            gstlibuvch264src ──┘
+            ```
+
+            ### Debian Packages
+            | Architecture | Package |
+            |--------------|---------|
+            | ARM64 | `ceracoder_${{ needs.calculate-version.outputs.version }}_arm64.deb` |
+            | AMD64 | `ceracoder_${{ needs.calculate-version.outputs.version }}_amd64.deb` |
+
+            ### Binary Archives
+            | Architecture | Archive |
+            |--------------|---------|
+            | ARM64 | `ceracoder_${{ needs.calculate-version.outputs.version }}_arm64.tar.gz` |
+            | AMD64 | `ceracoder_${{ needs.calculate-version.outputs.version }}_amd64.tar.gz` |
+
+            ### Installation
+
+            **Debian/Ubuntu:**
+            ```bash
+            sudo dpkg -i ceracoder_${{ needs.calculate-version.outputs.version }}_<arch>.deb
+            sudo apt-get install -f  # Install dependencies
+            ```
+
+            **Manual:**
+            ```bash
+            tar -xzf ceracoder_${{ needs.calculate-version.outputs.version }}_<arch>.tar.gz
+            sudo cp -r ceracoder-${{ needs.calculate-version.outputs.version }}/* /usr/
+            ```
