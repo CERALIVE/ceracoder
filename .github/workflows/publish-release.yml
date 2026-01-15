@@ -134,9 +134,10 @@ jobs:
             --maintainer "CERALIVE <contact@ceralive.com>" \
             --url "https://github.com/CERALIVE/ceracoder" \
             --license "GPL-3.0" \
+            --depends "srtla" \
+            --depends "gstlibuvch264src" \
             --depends "libgstreamer1.0-0" \
             --depends "libgstreamer-plugins-base1.0-0" \
-            --depends "libsrt1.5-openssl" \
             -p "dist/ceracoder_${VERSION}_${ARCH}.deb" \
             build-output/usr/=/usr/
 
