@@ -245,6 +245,19 @@ jobs:
 
             Live video encoder with dynamic bitrate control and SRT support.
 
+            ### Dependency Chain
+            ```
+            srt
+              └── srtla
+                    └── ceracoder (this package)
+                          ├── Depends: srtla, gstlibuvch264src
+                          ├── Depends: libgstreamer1.0-0, libgstreamer-plugins-base1.0-0
+                          │
+                          └── Used by: ceralive-device
+            
+            gstlibuvch264src ──┘
+            ```
+
             ### Debian Packages
             | Architecture | Package |
             |--------------|---------|
