@@ -18,6 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: ceracoder
+          submodules: recursive
 
       - name: Checkout SRT (dependency)
         uses: actions/checkout@v4
@@ -68,10 +69,10 @@ jobs:
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y \
               build-essential \
-              cmake \
               git \
               libgstreamer1.0-dev \
               libgstreamer-plugins-base1.0-dev \
+              gstreamer1.0-plugins-base \
               libssl-dev \
               pkg-config \
               && rm -rf /var/lib/apt/lists/*
@@ -81,12 +82,12 @@ jobs:
           RUN ldconfig
           WORKDIR /build
           COPY ceracoder/ .
-          RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
+          RUN make ceracoder
           DOCKERFILE
 
       - name: Verify binary was built
         run: |
-          docker run --rm ceracoder-builder:${{ matrix.arch }} ls -la /build/build/ceracoder
+          docker run --rm ceracoder-builder:${{ matrix.arch }} ls -la /build/ceracoder
 
       - name: Build Summary
         run: |
