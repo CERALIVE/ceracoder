@@ -9,10 +9,14 @@ on:
 jobs:
   build:
     name: Build ${{ matrix.arch }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        arch: [arm64, amd64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout ceracoder
         uses: actions/checkout@v4
@@ -26,68 +30,41 @@ jobs:
           repository: CERALIVE/srt
           path: srt
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Build ceracoder for ${{ matrix.arch }}
+      - name: Install build dependencies
         run: |
-          PLATFORM="linux/${{ matrix.arch }}"
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            git \
+            libssl-dev \
+            pkg-config \
+            tclsh \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base
 
-          # Create a combined context with both repos
-          mkdir -p build-context
-          cp -r srt build-context/
-          cp -r ceracoder build-context/
+      - name: Build SRT
+        run: |
+          cd srt
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DENABLE_APPS=OFF \
+            -DENABLE_BONDING=ON \
+            -DENABLE_ENCRYPTION=ON
+          cmake --build build -j$(nproc)
+          sudo cmake --install build
 
-          docker buildx build \
-            --platform "$PLATFORM" \
-            --load \
-            -t ceracoder-builder:${{ matrix.arch }} \
-            -f - build-context <<'DOCKERFILE'
-          FROM debian:bookworm-slim AS srt-builder
-          RUN apt-get update && apt-get install -y \
-              build-essential \
-              cmake \
-              git \
-              libssl-dev \
-              pkg-config \
-              tclsh \
-              && rm -rf /var/lib/apt/lists/*
-          WORKDIR /srt
-          COPY srt/ .
-          RUN cmake -B build \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX=/usr \
-              -DENABLE_APPS=OFF \
-              -DENABLE_BONDING=ON \
-              -DENABLE_ENCRYPTION=ON \
-              && cmake --build build -j$(nproc) \
-              && cmake --install build
-
-          FROM debian:bookworm-slim
-          RUN apt-get update && apt-get install -y \
-              build-essential \
-              git \
-              libgstreamer1.0-dev \
-              libgstreamer-plugins-base1.0-dev \
-              gstreamer1.0-plugins-base \
-              libssl-dev \
-              pkg-config \
-              && rm -rf /var/lib/apt/lists/*
-          COPY --from=srt-builder /usr/include/srt /usr/include/srt
-          COPY --from=srt-builder /usr/lib/*-linux-gnu*/libsrt* /usr/lib/
-          COPY --from=srt-builder /usr/lib/*-linux-gnu*/pkgconfig/srt.pc /usr/lib/pkgconfig/
-          RUN ldconfig
-          WORKDIR /build
-          COPY ceracoder/ .
-          RUN make ceracoder
-          DOCKERFILE
+      - name: Build ceracoder
+        run: |
+          cd ceracoder
+          make ceracoder
 
       - name: Verify binary was built
         run: |
-          docker run --rm ceracoder-builder:${{ matrix.arch }} ls -la /build/ceracoder
+          ls -la ceracoder/ceracoder
+          file ceracoder/ceracoder
 
       - name: Build Summary
         run: |
