@@ -44,6 +44,7 @@
 #include "balancer_runner.h"
 #include "bitrate_control.h"
 #include "sd_notify.h"
+#include "frame_liveness.h"
 
 // SRT ACK timeout
 #define SRT_ACK_TIMEOUT 6000 // maximum interval between received ACKs before the connection is TOed
@@ -103,6 +104,18 @@ static uint64_t prev_ack_count = 0;
 // unrecoverable SRT failure must escalate to the systemd supervisor.
 static volatile sig_atomic_t exit_code = EXIT_SUCCESS;
 
+/*
+ * Frame-production liveness (ADR-0005 device supervision model, "zombie-encode"
+ * detection). Updated once per produced frame from the appsink streaming thread
+ * (new_buf_cb) and read from the main loop's watchdog ping. Process liveness
+ * alone cannot see an encoder that is alive with the SRT link up yet producing
+ * no frames; this tracks whether buffers are still advancing through appsink.
+ * The two shared scalars inside are C11 relaxed atomics, so this cross-thread
+ * access needs no lock. The watchdog ping is gated on it: a stalled pipeline
+ * withholds WATCHDOG=1 and systemd respawns the process.
+ */
+static FrameLiveness frame_liveness;
+
 // Forward declarations for the reconnect machinery.
 static void srt_reconnect_start(void);
 gboolean srt_reconnect_attempt_cb(gpointer user_data);
@@ -121,6 +134,25 @@ uint64_t getms() {
     return 0;
   }
   return ((uint64_t)ts.tv_sec * 1000) + ((uint64_t)ts.tv_nsec / 1000000);
+}
+
+/*
+  Frame-production liveness health surface (ADR-0005). Non-static so the health
+  RPC (Task 13) can consume the same signal the watchdog ping gates on without
+  reaching into the FrameLiveness struct. Thin wrappers over the pure tracker
+  sampled against the live monotonic clock.
+
+  ceracoder_frames_advancing(): false once the encoder has produced no frame for
+  the configured stall threshold (default 3s) — i.e. a zombie-encode — true
+  while frames keep flowing.
+  ceracoder_frame_count(): total frames produced this run (monotonic counter).
+*/
+bool ceracoder_frames_advancing(void) {
+  return frame_liveness_advancing_at(&frame_liveness, getms());
+}
+
+uint64_t ceracoder_frame_count(void) {
+  return frame_liveness_count(&frame_liveness);
 }
 
 // Parse a string to long with full error checking
@@ -448,6 +480,14 @@ GstFlowReturn new_buf_cb(GstAppSink *sink, gpointer user_data) {
   GstSample *sample = gst_app_sink_pull_sample(sink);
   if (!sample) return GST_FLOW_ERROR;
 
+  /* A buffer reached appsink => the pipeline produced a frame. Record liveness
+     here (before any SRT logic) so frame *production* is tracked independently
+     of transmission: encoded frames still count while the SRT link is down and
+     packets are being dropped, distinguishing a network blip (handled by the
+     reconnect machine) from a zombie-encode (handled by the watchdog). Cheap:
+     a relaxed atomic store + increment (ADR-0005, Task 12). */
+  frame_liveness_record(&frame_liveness, getms());
+
   GstBuffer *buffer = NULL;
   GstMapInfo map = {0};
 
@@ -596,20 +636,40 @@ void cb_sigalarm(int signum) {
   Pets the systemd watchdog (WatchdogSec=) from the GLib main loop.
 
   Per ADR-0005, systemd is the sole process-restart authority; ceracoder pets
-  the watchdog so a hung or zombie process (main loop stuck) is killed and
-  respawned. Reaching this callback proves the main loop is still dispatching —
-  that is the liveness source wired here. Task 12 will additionally gate the
-  ping on the encoded-frame production counter, so a frame-production stall
-  (capture alive, no encoded frames) also fails the ping and triggers a restart.
+  the watchdog so a hung or zombie process is killed and respawned. Two liveness
+  conditions must BOTH hold to emit the ping:
 
-  No-op when not supervised by systemd (NOTIFY_SOCKET unset).
+    1. The GLib main loop is still dispatching — reaching this callback proves
+       it (catches a hung/stuck main loop).
+    2. The encoder is still producing frames — ceracoder_frames_advancing()
+       (catches a zombie-encode: process alive, SRT possibly up, but no encoded
+       frames for the stall threshold).
+
+  When frames have stalled we deliberately WITHHOLD WATCHDOG=1: the keep-alive
+  stops, WatchdogSec elapses, and systemd kills + respawns the process. This is
+  the frame-production health signal feeding the single restart authority — we
+  never respawn independently. No-op when not supervised by systemd
+  (NOTIFY_SOCKET unset).
 */
 gboolean watchdog_ping(gpointer user_data) {
   (void)user_data;
   if (quit) {
     return G_SOURCE_REMOVE;
   }
-  sd_notify_watchdog();
+  if (ceracoder_frames_advancing()) {
+    sd_notify_watchdog();
+  } else {
+    /* Zombie-encode: main loop alive but no frames produced for the stall
+       threshold. Withhold the ping so WatchdogSec fires (ADR-0005). Logged once
+       per missed ping (the watchdog interval) so the supervisor restart cause
+       is visible in the journal without flooding it per frame. */
+    fprintf(stderr,
+            "Frame production stalled (no encoded frames for >= %llu ms, "
+            "%llu frames this run); withholding systemd watchdog ping so the "
+            "supervisor restarts us\n",
+            (unsigned long long)frame_liveness_threshold_ms(&frame_liveness),
+            (unsigned long long)ceracoder_frame_count());
+  }
   return TRUE;
 }
 
@@ -784,6 +844,15 @@ int main(int argc, char** argv) {
   g_unix_signal_add(SIGINT, stop_from_signal, NULL);
   signal(SIGALRM, cb_sigalarm);
   g_timeout_add(1000, stall_check, NULL);
+
+  /* Arm frame-production liveness just before the pipeline starts so the
+     startup baseline (time-to-first-frame budget) begins at PLAYING, not during
+     the blocking SRT connect loop above. Threshold is env-overridable
+     (CERACODER_FRAME_STALL_MS) like the reconnect knobs, leaving the INI schema
+     and TS bindings untouched (ADR-0005, Task 12). */
+  unsigned long fl_stall_ms = (unsigned long)env_long(
+      "CERACODER_FRAME_STALL_MS", FRAME_LIVENESS_DEFAULT_STALL_MS, 100, 600000);
+  frame_liveness_init(&frame_liveness, fl_stall_ms, getms());
 
   // Start pipeline
   gst_element_set_state((GstElement*)gst_pipeline, GST_STATE_PLAYING);

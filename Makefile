@@ -20,6 +20,7 @@ OBJS = $(SRCDIR)/ceracoder.o \
        $(SRCDIR)/net/srt_reconnect.o \
        $(SRCDIR)/gst/encoder_control.o \
        $(SRCDIR)/gst/overlay_ui.o \
+       $(SRCDIR)/gst/frame_liveness.o \
        $(SRCDIR)/core/balancer_runner.o \
        $(SRCDIR)/core/bitrate_control.o \
        $(SRCDIR)/core/config.o \
@@ -46,10 +47,10 @@ $(SRCDIR)/%.o: $(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Test targets
-test: submodule test_balancer test_integration test_reconnect
+test: submodule test_balancer test_integration test_reconnect test_frame_liveness
 
 # Full test suite including SRT network tests
-test_all: submodule test_balancer test_integration test_reconnect test_srt test_srt_live_transmit
+test_all: submodule test_balancer test_integration test_reconnect test_frame_liveness test_srt test_srt_live_transmit
 
 test_balancer: $(TESTDIR)/test_balancer.o $(TEST_OBJS)
 	$(CC) $(TEST_CFLAGS) $^ -o $(TESTDIR)/$@ $(TEST_LDFLAGS)
@@ -61,6 +62,11 @@ test_integration: $(TESTDIR)/test_integration.o $(TEST_OBJS)
 
 # Reconnect state machine tests (pure logic, no live SRT socket / GStreamer)
 test_reconnect: $(TESTDIR)/test_reconnect.o $(SRCDIR)/net/srt_reconnect.o
+	$(CC) $(TEST_CFLAGS) $^ -o $(TESTDIR)/$@ $(TEST_LDFLAGS)
+	./$(TESTDIR)/$@
+
+# Frame-production liveness tests (pure logic, injectable clock, no GStreamer/SRT)
+test_frame_liveness: $(TESTDIR)/test_frame_liveness.o $(SRCDIR)/gst/frame_liveness.o
 	$(CC) $(TEST_CFLAGS) $^ -o $(TESTDIR)/$@ $(TEST_LDFLAGS)
 	./$(TESTDIR)/$@
 
@@ -86,7 +92,7 @@ lint:
 clean:
 	rm -f ceracoder \
 		$(SRCDIR)/*.o $(SRCDIR)/core/*.o $(SRCDIR)/io/*.o $(SRCDIR)/net/*.o $(SRCDIR)/gst/*.o \
-		$(TESTDIR)/*.o $(TESTDIR)/test_balancer $(TESTDIR)/test_integration $(TESTDIR)/test_reconnect $(TESTDIR)/test_srt $(TESTDIR)/test_srt_live_transmit camlink_workaround/*.o
+		$(TESTDIR)/*.o $(TESTDIR)/test_balancer $(TESTDIR)/test_integration $(TESTDIR)/test_reconnect $(TESTDIR)/test_frame_liveness $(TESTDIR)/test_srt $(TESTDIR)/test_srt_live_transmit camlink_workaround/*.o
 
-.PHONY: all submodule clean test test_all test_balancer test_integration test_reconnect test_srt test_srt_live_transmit lint
+.PHONY: all submodule clean test test_all test_balancer test_integration test_reconnect test_frame_liveness test_srt test_srt_live_transmit lint
 
