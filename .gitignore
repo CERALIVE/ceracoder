@@ -4,6 +4,7 @@ ceracoder
 # Test binaries
 tests/test_balancer
 tests/test_integration
+tests/test_reconnect
 tests/test_srt
 tests/test_srt_integration
 tests/test_srt_live_transmit

@@ -152,6 +152,20 @@ static int parse_long(const char *str, long *result, long min_val, long max_val)
   return 0;
 }
 
+// Read a bounded integer from the environment, falling back to def when unset
+// or invalid. Used to override the reconnect window/backoff without touching the
+// INI config schema (keeps the stable TypeScript bindings unchanged).
+static long env_long(const char *name, long def, long lo, long hi) {
+  const char *v = getenv(name);
+  if (v == NULL) return def;
+  long out;
+  if (parse_long(v, &out, lo, hi) != 0) {
+    fprintf(stderr, "Ignoring invalid %s=%s; using %ld\n", name, v, def);
+    return def;
+  }
+  return out;
+}
+
 // Forward declaration
 int read_bitrate_file(void);
 
@@ -375,7 +389,7 @@ static void srt_reconnect_start(void) {
   fprintf(stderr, "SRT connection lost; starting in-process reconnect "
                   "(attempt %d in %ld ms, backoff cap %u ms, %s window)\n",
           reconnect_attempt_count(&reconnect_ctrl), backoff,
-          RECONNECT_DEFAULT_MAX_MS,
+          reconnect_ctrl.max_backoff_ms,
           reconnect_ctrl.max_attempts > 0 ? "bounded" : "unlimited");
   g_timeout_add((guint)backoff, srt_reconnect_attempt_cb, NULL);
 }
@@ -667,8 +681,13 @@ int main(int argc, char** argv) {
   srt_port = opts.srt_port;
   srt_stream_id = opts.stream_id;
   srt_latency_ms = srt_latency;
-  reconnect_init(&reconnect_ctrl, RECONNECT_DEFAULT_BASE_MS, RECONNECT_DEFAULT_MAX_MS,
-                 RECONNECT_DEFAULT_MAX_ATTEMPTS);
+  unsigned int rc_base = (unsigned int)env_long("CERACODER_RECONNECT_BASE_MS",
+                                                RECONNECT_DEFAULT_BASE_MS, 1, 600000);
+  unsigned int rc_cap = (unsigned int)env_long("CERACODER_RECONNECT_MAX_MS",
+                                               RECONNECT_DEFAULT_MAX_MS, 1, 600000);
+  int rc_attempts = (int)env_long("CERACODER_RECONNECT_MAX_ATTEMPTS",
+                                  RECONNECT_DEFAULT_MAX_ATTEMPTS, 0, 1000000);
+  reconnect_init(&reconnect_ctrl, rc_base, rc_cap, rc_attempts);
 
   // Initialize balancer
   if (balancer_runner_init(&balancer_runner, &g_config, opts.balancer_name, 
