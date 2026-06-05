@@ -1,0 +1,47 @@
+[Unit]
+Description=Ceracoder - SRT video encoder with dynamic bitrate (CeraLive)
+Documentation=https://github.com/CERALIVE/ceracoder
+# Bonding link layer must be up first; ceracoder sends SRT to the local srtla_send.
+After=network-online.target srtla-send.service
+Wants=network-online.target
+# Crash-loop damping (ADR-0005): if ceracoder exits >= StartLimitBurst times
+# within StartLimitIntervalSec, systemd stops respawning and enters the failed
+# state instead of a tight restart loop. The streaming failure is then surfaced
+# to the operator rather than hammering the encoder.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# Type=notify: ceracoder calls sd_notify(READY=1) once the pipeline is PLAYING
+# and the SRT connection is established, so systemd only considers the unit
+# "active" when the encoder is actually running.
+Type=notify
+NotifyAccess=main
+
+# Per-stream arguments (pipeline file, SRT host/port, stream id, bitrate config)
+# are written by the CeraUI control plane before it starts this unit. The "-"
+# prefix makes the file optional so the unit still validates when absent.
+EnvironmentFile=-/run/ceralive/ceracoder.env
+ExecStart=/usr/bin/ceracoder $CERACODER_ARGS
+
+# systemd is the SOLE process-restart authority (ADR-0005). ceracoder's
+# in-process SRT reconnect absorbs transient link blips WITHOUT exiting; only a
+# permanent failure exits non-zero and hands authority here.
+Restart=on-failure
+RestartSec=5
+
+# Hardware-style watchdog: ceracoder pets WATCHDOG=1 from its GLib main loop.
+# If the process hangs/zombies (main loop stuck, or - after Task 12 - frame
+# production stalls), the ping stops, systemd kills the process and Restart=
+# respawns it.
+#
+# WatchdogSec MUST exceed ceracoder's in-process SRT reconnect backoff cap
+# (30s, Task 8) so a legitimate reconnect window is never mistaken for a hang.
+# 90s = 30s cap + headroom.
+WatchdogSec=90
+
+KillMode=mixed
+SyslogIdentifier=ceracoder
+
+[Install]
+WantedBy=multi-user.target

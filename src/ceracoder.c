@@ -37,11 +37,13 @@
 #include "cli_options.h"
 #include "config.h"
 #include "srt_client.h"
+#include "srt_reconnect.h"
 #include "pipeline_loader.h"
 #include "encoder_control.h"
 #include "overlay_ui.h"
 #include "balancer_runner.h"
 #include "bitrate_control.h"
+#include "sd_notify.h"
 
 // SRT ACK timeout
 #define SRT_ACK_TIMEOUT 6000 // maximum interval between received ACKs before the connection is TOed
@@ -73,6 +75,37 @@ static BalancerRunner balancer_runner;
 static int quit = 0;
 static int av_delay = 0;
 static int srt_pkt_size = DEFAULT_SRT_PKT_SIZE;
+
+/*
+ * In-process SRT reconnect state (ADR-0005 device supervision model).
+ *
+ * On a transient SRT drop (send failure or ACK timeout) ceracoder retries the
+ * connection in-process with exponential backoff instead of hard-exiting, so a
+ * brief link blip no longer tears down the stream. The process exits non-zero
+ * only when the bounded reconnect window is exhausted or a permanent reject is
+ * classified, handing restart authority to systemd (Restart=on-failure).
+ */
+static ReconnectController reconnect_ctrl;
+// Connection target captured at startup so the reconnect path can redial.
+static const char *srt_host = NULL;
+static const char *srt_port = NULL;
+static const char *srt_stream_id = NULL;
+static int srt_latency_ms = 0;
+// Set by the appsink streaming thread on send failure; observed by the main
+// loop's housekeeping to drive the reconnect. Treated like `quit`: a simple
+// cross-thread flag in the style this codebase already uses.
+static volatile sig_atomic_t srt_lost = 0;
+// ACK-liveness tracking (file scope so a successful reconnect can reset it
+// against the fresh socket's zeroed counters).
+static uint64_t prev_ack_ts = 0;
+static uint64_t prev_ack_count = 0;
+// Process exit code: 0 for clean shutdown (SIGTERM/SIGINT), non-zero when an
+// unrecoverable SRT failure must escalate to the systemd supervisor.
+static volatile sig_atomic_t exit_code = EXIT_SUCCESS;
+
+// Forward declarations for the reconnect machinery.
+static void srt_reconnect_start(void);
+gboolean srt_reconnect_attempt_cb(gpointer user_data);
 
 // Configuration
 static BelacoderConfig g_config;
@@ -129,6 +162,17 @@ void stop() {
     alarm(3);
     g_main_loop_quit(loop);
   }
+}
+
+/* Stop with a specific process exit code. A non-zero code escalates an
+   unrecoverable failure to the systemd supervisor (Restart=on-failure),
+   per ADR-0005. The first non-zero code wins so it survives a later clean
+   stop() triggered while the main loop unwinds. */
+void stop_with_code(int code) {
+  if (code != EXIT_SUCCESS && exit_code == EXIT_SUCCESS) {
+    exit_code = code;
+  }
+  stop();
 }
 
 // Async-signal-safe handler for SIGHUP
@@ -263,11 +307,96 @@ void do_bitrate_update(SRT_TRACEBSTATS *stats, uint64_t ctime) {
   encoder_control_set_bitrate(&encoder_ctrl, output.new_bitrate);
 }
 
+/*
+  One in-process reconnect attempt, scheduled as a one-shot GLib timeout after
+  the backoff delay (keeps the main loop signal-responsive between attempts).
+  Adaptive-bitrate and encoder state are intentionally untouched — only the SRT
+  socket is rebuilt. Re-arms itself for the next attempt; on a permanent reject
+  or exhausted window it escalates to systemd via a clean non-zero exit.
+*/
+gboolean srt_reconnect_attempt_cb(gpointer user_data) {
+  (void)user_data;
+  if (quit) return G_SOURCE_REMOVE;
+
+  int attempt = reconnect_attempt_count(&reconnect_ctrl);
+  int ret = srt_client_connect(&srt_client, srt_host, srt_port,
+                               srt_stream_id, srt_latency_ms, srt_pkt_size);
+  if (ret == 0) {
+    reconnect_succeeded(&reconnect_ctrl);
+    // Reset ACK-liveness so the dead socket's stale timestamp can't immediately
+    // re-trigger the timeout against the fresh socket's zeroed counters.
+    prev_ack_ts = 0;
+    prev_ack_count = 0;
+    srt_lost = 0;
+    fprintf(stderr, "SRT reconnected on attempt %d (total reconnects this run: %d)\n",
+            attempt, reconnect_total_reconnects(&reconnect_ctrl));
+    return G_SOURCE_REMOVE;
+  }
+
+  // A reject the server will not retract: stop retrying, hand off to systemd.
+  if (reconnect_reason_is_permanent(ret)) {
+    fprintf(stderr, "SRT reconnect: permanent failure (reason %d); "
+                    "exiting for supervisor restart\n", ret);
+    stop_with_code(EXIT_FAILURE);
+    return G_SOURCE_REMOVE;
+  }
+
+  long backoff = reconnect_next_backoff_ms(&reconnect_ctrl);
+  if (backoff < 0) {
+    fprintf(stderr, "SRT reconnect window exhausted after %d attempts; "
+                    "exiting for supervisor restart\n", attempt);
+    stop_with_code(EXIT_FAILURE);
+    return G_SOURCE_REMOVE;
+  }
+
+  fprintf(stderr, "SRT reconnect attempt %d failed (reason %d); "
+                  "retrying in %ld ms\n", attempt, ret, backoff);
+  g_timeout_add((guint)backoff, srt_reconnect_attempt_cb, NULL);
+  return G_SOURCE_REMOVE;
+}
+
+/* Begin a reconnect episode: drop the dead socket, arm the backoff machine, and
+   schedule the first attempt. Idempotent while a reconnect is already running. */
+static void srt_reconnect_start(void) {
+  if (quit) return;
+  if (reconnect_is_reconnecting(&reconnect_ctrl)) return;
+
+  srt_client_close(&srt_client);
+  reconnect_begin(&reconnect_ctrl);
+
+  long backoff = reconnect_next_backoff_ms(&reconnect_ctrl);
+  if (backoff < 0) {
+    fprintf(stderr, "SRT reconnect disabled by configuration; "
+                    "exiting for supervisor restart\n");
+    stop_with_code(EXIT_FAILURE);
+    return;
+  }
+
+  fprintf(stderr, "SRT connection lost; starting in-process reconnect "
+                  "(attempt %d in %ld ms, backoff cap %u ms, %s window)\n",
+          reconnect_attempt_count(&reconnect_ctrl), backoff,
+          RECONNECT_DEFAULT_MAX_MS,
+          reconnect_ctrl.max_attempts > 0 ? "bounded" : "unlimited");
+  g_timeout_add((guint)backoff, srt_reconnect_attempt_cb, NULL);
+}
+
 gboolean connection_housekeeping(gpointer user_data) {
   (void)user_data;
+  if (quit) return TRUE;
+
   uint64_t ctime = getms();
-  static uint64_t prev_ack_ts = 0;
-  static uint64_t prev_ack_count = 0;
+
+  // Socket is closed/redialing during a reconnect — skip stats until it settles.
+  if (reconnect_is_reconnecting(&reconnect_ctrl)) {
+    return TRUE;
+  }
+
+  // srt_lost is raised by the appsink thread; the main loop owns the reconnect
+  // so every GLib timer is scheduled from a single thread.
+  if (srt_lost) {
+    srt_reconnect_start();
+    return TRUE;
+  }
 
   // SRT stats
   SRT_TRACEBSTATS stats;
@@ -279,10 +408,13 @@ gboolean connection_housekeeping(gpointer user_data) {
     prev_ack_count = stats.pktRecvACKTotal;
     prev_ack_ts = ctime;
   }
-  /* Manual check for connection timeout */
+  /* ACK timeout now triggers in-process reconnect instead of a hard exit, so a
+     transient ACK gap no longer tears down the stream (ADR-0005). */
   if (prev_ack_count != 0 && (ctime - prev_ack_ts) > SRT_ACK_TIMEOUT) {
-    fprintf(stderr, "The SRT connection timed out, exiting\n");
-    stop();
+    fprintf(stderr, "The SRT connection timed out; attempting in-process reconnect\n");
+    srt_lost = 1;
+    srt_reconnect_start();
+    return TRUE;
   }
 
   // Update bitrate when we have a configurable encoder
@@ -316,14 +448,16 @@ GstFlowReturn new_buf_cb(GstAppSink *sink, gpointer user_data) {
     pkt_len += copy_sz;
 
     if (pkt_len == srt_pkt_size) {
-      int nb = srt_client_send(&srt_client, pkt, srt_pkt_size);
-      if (nb != srt_pkt_size) {
-        if (!quit) {
-          fprintf(stderr, "The SRT connection failed, exiting\n");
-          stop();
+      /* While the connection is down we drop encoded packets rather than block
+         or send on a dead socket; the main loop reconnects in-process. On a send
+         failure we only raise srt_lost (no stop()) — systemd, not ceracoder,
+         owns process restart (ADR-0005). The pipeline stays alive either way. */
+      if (!srt_lost) {
+        int nb = srt_client_send(&srt_client, pkt, srt_pkt_size);
+        if (nb != srt_pkt_size && !quit) {
+          fprintf(stderr, "SRT send failed; flagging in-process reconnect\n");
+          srt_lost = 1;
         }
-        code = GST_FLOW_ERROR;
-        goto ret;
       }
       pkt_len = 0;
     }
@@ -331,7 +465,6 @@ GstFlowReturn new_buf_cb(GstAppSink *sink, gpointer user_data) {
     sample_sz -= copy_sz;
   } while(sample_sz);
 
-ret:
   gst_buffer_unmap(buffer, &map);
   gst_sample_unref(sample);
 
@@ -437,9 +570,33 @@ void cb_pipeline (GstBus *bus, GstMessage *message, gpointer user_data) {
   }
 }
 
-// Only called if the pipeline failed to stop
+// Only called if the pipeline failed to stop in time. Preserve the chosen exit
+// code so an unrecoverable-failure shutdown still exits non-zero for systemd,
+// while a SIGINT/SIGTERM shutdown stays clean (exit_code defaults to SUCCESS).
 void cb_sigalarm(int signum) {
-  _exit(EXIT_SUCCESS); // exiting deliberately following SIGINT or SIGTERM
+  (void)signum;
+  _exit(exit_code);
+}
+
+/*
+  Pets the systemd watchdog (WatchdogSec=) from the GLib main loop.
+
+  Per ADR-0005, systemd is the sole process-restart authority; ceracoder pets
+  the watchdog so a hung or zombie process (main loop stuck) is killed and
+  respawned. Reaching this callback proves the main loop is still dispatching —
+  that is the liveness source wired here. Task 12 will additionally gate the
+  ping on the encoded-frame production counter, so a frame-production stall
+  (capture alive, no encoded frames) also fails the ping and triggers a restart.
+
+  No-op when not supervised by systemd (NOTIFY_SOCKET unset).
+*/
+gboolean watchdog_ping(gpointer user_data) {
+  (void)user_data;
+  if (quit) {
+    return G_SOURCE_REMOVE;
+  }
+  sd_notify_watchdog();
+  return TRUE;
 }
 
 #define FIXED_ARGS 3
@@ -502,6 +659,16 @@ int main(int argc, char** argv) {
   // Determine SRT latency (CLI -l takes precedence over config)
   int srt_latency = (opts.srt_latency != 2000) ? opts.srt_latency : 
                     (g_config.srt_latency > 0 ? g_config.srt_latency : 2000);
+
+  // Capture the SRT target + arm the in-process reconnect machine so a transient
+  // loss can redial without a process restart (ADR-0005). Default = bounded
+  // window; pass RECONNECT_UNLIMITED to never escalate transient loss.
+  srt_host = opts.srt_host;
+  srt_port = opts.srt_port;
+  srt_stream_id = opts.stream_id;
+  srt_latency_ms = srt_latency;
+  reconnect_init(&reconnect_ctrl, RECONNECT_DEFAULT_BASE_MS, RECONNECT_DEFAULT_MAX_MS,
+                 RECONNECT_DEFAULT_MAX_ATTEMPTS);
 
   // Initialize balancer
   if (balancer_runner_init(&balancer_runner, &g_config, opts.balancer_name, 
@@ -601,6 +768,28 @@ int main(int argc, char** argv) {
 
   // Start pipeline
   gst_element_set_state((GstElement*)gst_pipeline, GST_STATE_PLAYING);
+
+  /* Startup is complete: pipeline is PLAYING and (when using appsink) the SRT
+     connection is established. Tell systemd we are READY so a Type=notify unit
+     leaves the "activating" state. No-op when not run under systemd. */
+  sd_notify_ready();
+
+  /* If systemd configured a watchdog for this unit (WatchdogSec=), pet it from
+     the main loop at half the configured interval (the interval systemd
+     recommends). If the main loop hangs/zombies, the ping stops and systemd
+     kills + respawns the process (ADR-0005). WatchdogSec is intentionally set
+     larger than ceracoder's in-process SRT reconnect backoff cap so a
+     legitimate reconnect is never mistaken for a hang. */
+  unsigned long long wd_usec = sd_watchdog_usec();
+  if (wd_usec > 0) {
+    guint wd_interval_ms = (guint)((wd_usec / 1000ULL) / 2ULL);
+    if (wd_interval_ms < 1) wd_interval_ms = 1;
+    g_timeout_add(wd_interval_ms, watchdog_ping, NULL);
+    fprintf(stderr,
+            "systemd watchdog enabled: petting every %u ms (WatchdogSec=%llu s)\n",
+            wd_interval_ms, wd_usec / 1000000ULL);
+  }
+
   g_main_loop_run(loop);
 
   // Cleanup
@@ -610,5 +799,7 @@ int main(int argc, char** argv) {
   balancer_runner_cleanup(&balancer_runner);
   pipeline_file_unload(&pfile);
 
-  return 0;
+  // Non-zero on unrecoverable SRT failure so systemd (Restart=on-failure)
+  // respawns; zero on a clean SIGINT/SIGTERM shutdown (ADR-0005).
+  return exit_code;
 }
