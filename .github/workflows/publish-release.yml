@@ -111,7 +111,7 @@ jobs:
         run: |
           mkdir -p dist
 
-          # Create .deb package
+          # Create .deb package (also ships the systemd unit, ADR-0005)
           fpm -s dir -t deb \
             -n ceracoder \
             -v "${VERSION}" \
@@ -125,7 +125,8 @@ jobs:
             --depends "libgstreamer1.0-0" \
             --depends "libgstreamer-plugins-base1.0-0" \
             -p "dist/ceracoder_${VERSION}_${ARCH}.deb" \
-            build-output/usr/=/usr/
+            build-output/usr/=/usr/ \
+            packaging/systemd/ceracoder.service=/usr/lib/systemd/system/ceracoder.service
 
           # Create .tar.gz archive
           mkdir -p tarball/ceracoder-${VERSION}
