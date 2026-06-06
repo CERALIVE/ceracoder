@@ -21,3 +21,6 @@ tests/test_srt_live_transmit
 bindings/typescript/node_modules/
 bindings/typescript/dist/
 bindings/typescript/*.tsbuildinfo
+
+# OpenCode agent state (local only)
+.omo/
